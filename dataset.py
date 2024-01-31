@@ -160,12 +160,12 @@ class ActiveDataset(Dataset):
             total_label = torch.cat([prompt_inputs["input_ids"][0] * 0 - 1, label_ids], dim=-1)
             return total_ids, total_label, nbest_prompt
         else:
-            return slurpid, prompt, nbest_prompt
+            return slurpid, prompt, nbest_prompt, label
 
 
 def collate_fn_active(batch):
-    slurp_ids, sequences, nbest_prompt = zip(*batch)
-    return slurp_ids, sequences, nbest_prompt
+    slurp_ids, sequences, nbest_prompt, label = zip(*batch)
+    return slurp_ids, sequences, nbest_prompt, label
 
 
 class SupervisedDataset(Dataset):

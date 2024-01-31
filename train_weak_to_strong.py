@@ -22,6 +22,11 @@ from torch.utils.data import DataLoader
 from dataset import SupervisedDataset, collate_fn, ActiveDataset, collate_fn_active
 from data.prompt import prompts
 from knowledgemodel import KnowledgeLLM
+from scoring.evaluation.metrics import ErrorMetric
+from scoring.evaluation.util import format_results, load_predictions, load_gold_data
+from scoring.evaluation.normalizers.english import EnglishTextNormalizer
+
+normaliser = EnglishTextNormalizer()
 
 
 device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
@@ -309,13 +314,45 @@ def get_cascaded_uncertainty(model, prompt_nbest, generate_hyps, tokenizer, leng
     return entropy
 
 
+def calc_metrics(output, label):
+    span_f1 = ErrorMetric.get_instance(metric="span_f1", average="micro")
+    distance_metrics = {}
+    for distance in ['word', 'char']:
+        distance_metrics[distance] = ErrorMetric.get_instance(metric="span_distance_f1",
+                                                              average="micro",
+                                                              distance=distance)
+    slu_f1 = ErrorMetric.get_instance(metric="slu_f1", average="micro")
+    try:
+        output = json.loads(output)
+        output_format = []
+        for key, value in output.items():
+            output_format.append({"type": key, "filler": normaliser(value).replace(" 's", "'s")})
+    except:
+        output_format = []
+    label_format = []
+    for key, value in label.items():
+        label_format.append({"type": key, "filler": value})
+    span_f1(label_format, output_format)
+    span_results = span_f1.get_metric()
+    for distance, metric in distance_metrics.items():
+        metric(label_format, output_format)
+        results = metric.get_metric()
+        slu_f1(results)
+    slu_f1 = slu_f1.get_metric()
+    if output_format == [] and label_format == []:
+        return 1, 1
+    else:
+        return span_results["overall"][2], slu_f1["overall"][2]
+
+
 def get_next_labelset(args, tokenizer, model, traindata):
     traindata.preprocess = False
     active_loader = DataLoader(traindata, batch_size=1, shuffle=False, collate_fn=collate_fn_active)
     firstpass_ids_dict = {}
     uncertainties = []
+    margin = 0.2
     for batch in tqdm(active_loader):
-        slurp_ids, sequences, nbest = batch
+        slurp_ids, sequences, nbest, label = batch
         if args.asrplace == "weak" or args.asrplace == "both" and nbest[0] != []:
             firstpass_ids_dict[slurp_ids[0]] = []
             # nbest[0].append([tokenizer(sequences[0]).input_ids])  # Adding reference
@@ -344,8 +381,17 @@ def get_next_labelset(args, tokenizer, model, traindata):
             logplist = torch.stack([hyp.cumscore for hyp in outputs])
             predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
             logplist = (- logplist / lengths).tolist()
-            uncertainties.extend(logplist)
-            firstpass_ids_dict[slurp_ids[0]] = [[tokenizer.decode(output.yseq).split("</s>")[0], logplist[i]] for i, output in enumerate(outputs)]
+            firstpass_ids_dict[slurp_ids[0]] = []
+            for k, hyp in enumerate(outputs):
+                sluf1 = calc_metrics(tokenizer.decode(hyp.yseq).split("</s>")[0], json.loads(label[0]))[1]
+                if sluf1 > 1 - margin and args.unc_threshold >= 0:
+                    firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], 0])
+                elif sluf1 < margin and args.unc_threshold >= 0:
+                    firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], 10000])
+                else:
+                    firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], logplist[k]])
+            uncertainties.append(logplist[0])
+            # firstpass_ids_dict[slurp_ids[0]] = [[tokenizer.decode(output.yseq).split("</s>")[0], logplist[i]] for i, output in enumerate(outputs)]
     uncertainties = sorted(uncertainties, reverse=True)
     threshold = uncertainties[int(args.unc_threshold * len(uncertainties))] if args.unc_threshold >= 0 else args.unc_threshold
     logging(f"Threshold for uncertainty: {threshold}")

@@ -6,7 +6,7 @@ asrname="medium"
 asrfile="data/${asrname}_2000.json"
 nsamples=2000
 # expdir="exp/SLURP_w2s/SLURP_vicuna7bASR_vicuna7b_${nsamples}_samples_weak1000sample"
-expdir="exp/SLURP_w2s/SLURP_gpt2_vicuna7bASR_${nsamples}_samples_weak1000sample_uncertainty_value"
+expdir="exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsamples}_samples_weak1000sample_uncertainty_gt0.5"
 # expdir="exp/SLURP/SLURP_vicuna13bv1.5_${nsamples}_samples_zeroshot_baseline2"
 logfile="$expdir/eval_log.txt"
 python inference.py \
@@ -22,7 +22,7 @@ python inference.py \
     --calibration_t 1 \
     --tag iter1 \
     --iteration 1 \
-    # --unc_threshold -1 \
+    --unc_threshold 0.06 \
     # --cascaded \
     # --ckptlist exp/checkpoints.txt \
     # --do_sampling \

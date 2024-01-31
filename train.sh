@@ -2,7 +2,7 @@
 
 nsample=2000
 # expdir="exp/SLURP_active/SLURP_vicuna7bv1.5_${nsample}_samples_qko_reset200_b5"
-expdir="exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsample}_samples_weak1000sample_uncertainty_value"
+expdir="exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsample}_samples_weak1000sample_uncertainty_gt0.5"
 # expdir="exp/SLURP/SLURP_llama13b_${nsample}_nbest_samples_zeroshot"
 
 # trainfile=data/trainlabel_norm_${nsample}.json
@@ -34,7 +34,7 @@ python train_weak_to_strong.py \
     --task deliberation \
     --asrplace none \
     --num_candidates 1 \
-    --unc_threshold -1 \
+    --unc_threshold 0.5 \
     # --selflabelling \
     # --topn 10 \
     # --tag LKI \

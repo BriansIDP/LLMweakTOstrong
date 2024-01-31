@@ -16,7 +16,6 @@ from peft import PeftModel, PeftConfig
 
 from data.prompt import templates, prompts
 from knowledgemodel import KnowledgeLLM
-from FSA import LexFSA
 # from model import KnowledgeLLM
 from scoring.evaluation.metrics import ErrorMetric
 from scoring.evaluation.util import format_results, load_predictions, load_gold_data
@@ -368,7 +367,6 @@ def main(args):
 
     # Global knowledge
     sel_knowledge = {"<slot>": list(knowledgebase.keys()), "<value>": knowledgebase}
-    values = LexFSA(tokenizer, task="slot", groupliteral=sel_knowledge)
 
     start = time.time()
     outputdict = {}
@@ -396,7 +394,6 @@ def main(args):
                 knowledge, knowledge_lki = gather_knowledge(nbest, knowledge_index, args.maxKBsize, linearise_knowledge)
             else:
                 knowledge, knowledge_lki = gather_knowledge(utterance, knowledge_index, args.maxKBsize, linearise_knowledge)
-            values = LexFSA(tokenizer, task="slot", groupliteral=knowledge)
 
             if "upperbound" in args.tag:
                 knowledge_lki = uttdict["label"]
@@ -415,7 +412,7 @@ def main(args):
                 input_ids=inputs.input_ids,
                 max_new_tokens=60,
                 stopping_criteria=stopping_criteria,
-                beamsize=candidates,
+                beamsize=3,
                 n_adapters=1,
             )
             weak_output = [weak_tokenizer.decode(hyp.yseq).split("</s>")[0] for hyp in generate_hyps]
@@ -425,9 +422,13 @@ def main(args):
             logplist = (- logplist / lengths).tolist()
             if args.unc_threshold >= 0:
                 for i, weak_out in enumerate(weak_output):
-                    weak_output[i] = weak_output[i] + "<uncertainty: {:.2f}>".format(logplist[i])
+                    if train_args["unc_threshold"] >= 0 and logplist[i] > args.unc_threshold:
+                        weak_output[i] = weak_output[i] + " <uncertain>"
+                    elif train_args["unc_threshold"] < 0:
+                        weak_output[i] = weak_output[i] + "<uncertainty: {:.2f}>".format(logplist[i])
+            print(weak_output[0])
             origquery = query
-            query = prompts["delib_query"].format(", ".join(weak_output)) + query
+            query = prompts["delib_query"].format(", ".join(weak_output[:candidates])) + query
             if "gpt2" not in train_args["weak_model_path"]:
                 model.llm.set_adapter("ada_1")
             else:
@@ -451,12 +452,12 @@ def main(args):
                     max_new_tokens=60,
                     stopping_criteria=stopping_criteria,
                     knowledge=knowledge_embeds if not linearise_knowledge else None,
-                    values=values if "select" not in args.tag else None,
-                    beamsize=candidates,
+                    values=None,
+                    beamsize=3,
                     n_adapters=1, # len(checkpoints),
                 )
                 output = [tokenizer.decode(hyp.yseq).split("</s>")[0] for hyp in generate_hyps]
-                query = prompts["delib_query"].format(", ".join(output)) + origquery
+                query = prompts["delib_query"].format(", ".join(output[:candidates])) + origquery
 
             # Uncertainty
             newbest_ind = 0

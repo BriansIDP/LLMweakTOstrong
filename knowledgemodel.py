@@ -32,6 +32,7 @@ class Hypo:
         self.yseq = []
         self.scores = []
         self.cumscore = 0.0
+        self.normscore = 0.0
         self.entropy = []
         self.treetrack = []
         self.completed = []
@@ -254,5 +255,7 @@ class KnowledgeLLM(torch.nn.Module):
             hyps = new_hyps
         if len(finished_beam) == 0:
             finished_beam.append(hyps[0])
-        sorted_hyps = sorted(finished_beam, key=lambda finished_beam: finished_beam.cumscore, reverse=True)
+        for hyp in finished_beam:
+            hyp.normscore = hyp.cumscore / len(hyp.yseq)
+        sorted_hyps = sorted(finished_beam, key=lambda finished_beam: finished_beam.normscore, reverse=True)
         return sorted_hyps
