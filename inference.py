@@ -346,10 +346,10 @@ def main(args):
 
     if "gpt2" not in train_args["weak_model_path"]:
         # config = PeftConfig.from_pretrained(peftpath)
-        llm.load_adapter(os.path.join(args.model_path, "checkpoint.best_weak"), adapter_name="ada_weak")
+        llm.load_adapter(os.path.join(args.model_path, "checkpoint.best_stronger"), adapter_name="ada_weak")
         llm.set_adapter("ada_1")
     else:
-        state_dict = torch.load(os.path.join(args.model_path, "checkpoint.best_weak", "pytorch_model.pt"))
+        state_dict = torch.load(os.path.join(args.model_path, "checkpoint.best_stronger", "pytorch_model.pt"))
         weakllm.load_state_dict(state_dict)
         weakllm.to(device)
 
@@ -428,15 +428,18 @@ def main(args):
                         weak_output[i] = weak_output[i] + "<uncertainty: {:.2f}>".format(logplist[i])
             print(weak_output[0])
             origquery = query
-            query = prompts["delib_query"].format(", ".join(weak_output[:candidates])) + query
-            if "gpt2" not in train_args["weak_model_path"]:
-                model.llm.set_adapter("ada_1")
-            else:
-                model.llm = llm
-                model.tokenizer = tokenizer
+            output = weak_output
+            if "normal" not in args.tag:
+                query = prompts["delib_query"].format(", ".join(weak_output[:candidates])) + query
 
             # Do second pass now
             for i in range(args.iterations):
+                if "gpt2" not in train_args["weak_model_path"]:
+                    model.llm.set_adapter("ada_1")
+                else:
+                    model.llm = llm
+                    model.tokenizer = tokenizer
+
                 if linearise_knowledge:
                     prompt = templates[LLMtype]["slot"][1].format(**locals())
                 else:
@@ -460,34 +463,14 @@ def main(args):
                 query = prompts["delib_query"].format(", ".join(output[:candidates])) + origquery
 
             # Uncertainty
-            newbest_ind = 0
             lengths = torch.tensor([len(hyp.yseq) for hyp in generate_hyps]).to(device)
-            if args.cascaded:
-                ensemble_entropy, predictive_entropy, unnorm_entropy  = get_cascaded_uncertainty(
-                    model, prompt_nbest[:5], generate_hyps, tokenizer, lengths)
-                logplist = torch.stack([hyp.cumscore for hyp in generate_hyps])
-                newbest_ind = torch.sort(logplist / lengths, descending=True)[1][0]
-            else:
-                if len(checkpoints) <= 1:
-                    logplist = torch.stack([hyp.cumscore for hyp in generate_hyps])
-                    ensemble_entropy = [torch.stack(hyp.entropy).tolist() for hyp in generate_hyps]
-                    # ensemble_entropy = [hyp.scores for hyp in generate_hyps]
-                else:
-                    logplist, ensemble_entropy = adapter_ensemble(
-                        model, inputs.input_ids, generate_hyps, tokenizer, len(checkpoints))
-                newbest_ind = torch.sort(logplist / lengths, descending=True)[1][0]
-                predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, args.calibration_t, lengths)
-            cutoff = 1
-            if args.do_sampling:
-                results = monte_carlo_dropout(model, inputs.input_ids, generate_hyps, tokenizer)
-                predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(results[0].sum(dim=-1), args.calibration_t, lengths)
-            # Measure segment level uncertainty
-            segment_output = segment_uncertainty([ensemble_entropy[newbest_ind]], [generate_hyps[newbest_ind].yseq], tokenizer)
-            correctness, uncertainty = calc_segment_metrics(uttdict["label"], segment_output)
-            bs_entropy = torch.stack(generate_hyps[newbest_ind].entropy).sum() / len(generate_hyps[newbest_ind].yseq)
-
+            logplist = torch.stack([hyp.cumscore for hyp in generate_hyps])
+            ensemble_entropy = [torch.stack(hyp.entropy).tolist() for hyp in generate_hyps]
+            # ensemble_entropy = [hyp.scores for hyp in generate_hyps]
+            newbest_ind = torch.sort(logplist / lengths, descending=True)[1][0]
+            predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, args.calibration_t, lengths)
             # Get outputs
-            outputs = tokenizer.batch_decode([generate_hyps[newbest_ind].yseq], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+            outputs = model.tokenizer.batch_decode([generate_hyps[newbest_ind].yseq], skip_special_tokens=True, clean_up_tokenization_spaces=False)
             output = merge_outputs(outputs, slotdict)
             print(predictive_entropy, unnorm_entropy, output)
             entity_f1, slu_f1 = calc_metrics(output, uttdict["label"])
@@ -498,9 +481,9 @@ def main(args):
                 "unnormalised": unnorm_entropy.item(),
                 "entity_f1": entity_f1,
                 "slu_f1": slu_f1,
-                "beamsearch_entropy": bs_entropy.item(),
-                "seg_correctness": correctness,
-                "seg_uncertainty": uncertainty,
+                "beamsearch_entropy": 0,
+                "seg_correctness": 0,
+                "seg_uncertainty": 0,
             }
             count += 1
             logging("Finished {}, Elapsed time {:.2f}".format(count, time.time()-start))

@@ -102,15 +102,15 @@ class ActiveDataset(Dataset):
             # if slurpid not in covered_ids:
             self.unlabelled.append(self.data[slurpid])
 
-    def update_with_firstpass(self, labelset, threshold):
+    def update_with_firstpass(self, labelset, threshold, update_label=False, update_delib=False):
         for datapiece in self.main_data:
-            datapiece[-2] = []
-            for item in labelset[datapiece[0]]:
-                if threshold < 0:
-                    item[0] = item[0] + "<uncertainty: {:.2f}>".format(item[1])
-                elif item[1] > threshold:
-                    item[0] = item[0] + " <uncertain>"
-                datapiece[-2].append(item[0])
+            if update_label:
+                datapiece[2] = labelset[datapiece[0]][0][0]
+                datapiece[3] = labelset[datapiece[0]][0][1]
+            if update_delib:
+                datapiece[4] = []
+                for item in labelset[datapiece[0]][1:]:
+                    datapiece[4].append(item[0])
 
     def process_json_data(self, data):
         sludata = {}
@@ -158,7 +158,7 @@ class ActiveDataset(Dataset):
             label_ids = label_ids[0, 1:] if label_ids[0, 0] == 1 else label_ids[0]
             total_ids = torch.cat([prompt_inputs["input_ids"][0], label_ids], dim=-1)
             total_label = torch.cat([prompt_inputs["input_ids"][0] * 0 - 1, label_ids], dim=-1)
-            return total_ids, total_label, nbest_prompt
+            return total_ids, total_label, nbest_prompt, values
         else:
             return slurpid, prompt, nbest_prompt, label
 
@@ -440,11 +440,13 @@ class SupervisedDataset(Dataset):
         return self.preprocessing(self.data[idx])
 
 def collate_fn(batch):
-    total_ids, total_label, nbest  = zip(*batch)
+    total_ids, total_label, nbest, values  = zip(*batch)
 
     total_ids = pad_sequence(total_ids, batch_first=True, padding_value=1).to(device)
     total_label = pad_sequence(total_label, batch_first=True, padding_value=-1).to(device)
     attn_mask = total_ids != 0
     inputs = {"input_ids": total_ids[:, :-1], "attention_mask": attn_mask[:, :-1]}
 
-    return inputs, total_label[:, 1:], nbest
+    if values[0] != {}:
+        values = torch.stack(values)
+    return inputs, total_label[:, 1:], nbest, values

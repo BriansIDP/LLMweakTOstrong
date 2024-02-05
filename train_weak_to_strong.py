@@ -25,6 +25,7 @@ from knowledgemodel import KnowledgeLLM
 from scoring.evaluation.metrics import ErrorMetric
 from scoring.evaluation.util import format_results, load_predictions, load_gold_data
 from scoring.evaluation.normalizers.english import EnglishTextNormalizer
+from loss import logconf_loss_fn
 
 normaliser = EnglishTextNormalizer()
 
@@ -75,10 +76,11 @@ def main(args):
     if "llama-2" in args.model_path:
         LLMtype = "llama2"
     weak_tokenizer = AutoTokenizer.from_pretrained(args.weak_model_path)
+    stronger_tokenizer = AutoTokenizer.from_pretrained(args.strong_model_path)
 
     ## Initialise data
     weaktraindata = ActiveDataset(
-        args.train_data_path,
+        args.weak_train_path,
         weak_tokenizer,
         slotdict,
         slotstr,
@@ -120,64 +122,153 @@ def main(args):
     weakmodel = KnowledgeLLM(weakllm, weak_tokenizer)
     weakmodel = weakmodel.to(device)
 
-    ## Initialise criterion and optimiser
-    criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
+    if os.path.exists(args.pretrained_weak_model_path):
+        if "gpt2" not in train_args["model_path"]:
+            # config = PeftConfig.from_pretrained(peftpath)
+            weakllm = PeftModel.from_pretrained(weakllm, args.pretrained_weak_model_path)
+        else:
+            state_dict = torch.load(os.path.join(args.pretrained_weak_model_path, "pytorch_model.pt"))
+            weakllm.load_state_dict(state_dict)
+    else:
+        ## Initialise criterion and optimiser
+        criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
 
-    ## Optimiser
-    optimizer = AdamW(get_grouped_params(weakmodel), lr=args.learning_rate)
+        ## Optimiser
+        optimizer = AdamW(get_grouped_params(weakmodel), lr=args.learning_rate)
 
-    # Scheduler and math around the number of training steps.
-    num_update_steps_per_epoch = math.ceil(
-        len(weaktraindata) / (args.gradient_accumulation_steps * args.batch_size))
-    max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+        # Scheduler and math around the number of training steps.
+        num_update_steps_per_epoch = math.ceil(
+            len(weaktraindata) / (args.gradient_accumulation_steps * args.batch_size))
+        max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
 
-    lr_scheduler = get_scheduler(
-        name=args.lr_scheduler_type,
-        optimizer=optimizer,
-        num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=max_train_steps,
-    )
-
-    print("Start training WEAK MODEL")
-    best_val_loss = 10000
-    best_weak_model = weakmodel
-    for epoch in range(args.num_train_epochs):
-        weakmodel.train()
-        weakmodel = train_one_epoch(
-            args,
-            epoch,
-            weakmodel,
-            train_dataloader,
-            optimizer,
-            lr_scheduler,
-            criterion,
-            tokenizer=weak_tokenizer,
+        lr_scheduler = get_scheduler(
+            name=args.lr_scheduler_type,
+            optimizer=optimizer,
+            num_warmup_steps=args.num_warmup_steps,
+            num_training_steps=max_train_steps,
         )
-        weakmodel.eval()
-        with torch.no_grad():
-            val_loss = eval_one_epoch(
+
+        print("Start training WEAK MODEL")
+        best_val_loss = 10000
+        best_weak_model = weakmodel
+        for epoch in range(args.num_train_epochs):
+            weakmodel.train()
+            weakmodel = train_one_epoch(
                 args,
+                epoch,
                 weakmodel,
-                valid_dataloader,
+                train_dataloader,
+                optimizer,
+                lr_scheduler,
                 criterion,
                 tokenizer=weak_tokenizer,
             )
-        val_ppl = math.exp(val_loss)
-        current_lr = optimizer.param_groups[0]["lr"]
-        logging(f"WEAK MODEL Epoch {epoch} | Validation PPL: {val_ppl} | Learning rate: {current_lr}")
-        # Save models
-        if val_loss < best_val_loss:
-            logging(f"Saving best WEAK MODEL at Epoch {epoch}")
-            save_checkpoint(weakmodel, weak_tokenizer, args.outputdir, "best_weak")
-            best_val_loss = val_loss
-            best_weak_model = copy.deepcopy(weakmodel.state_dict())
+            weakmodel.eval()
+            with torch.no_grad():
+                val_loss = eval_one_epoch(
+                    args,
+                    weakmodel,
+                    valid_dataloader,
+                    criterion,
+                    tokenizer=weak_tokenizer,
+                )
+            val_ppl = math.exp(val_loss)
+            current_lr = optimizer.param_groups[0]["lr"]
+            logging(f"WEAK MODEL Epoch {epoch} | Validation PPL: {val_ppl} | Learning rate: {current_lr}")
+            # Save models
+            if val_loss < best_val_loss:
+                logging(f"Saving best WEAK MODEL at Epoch {epoch}")
+                save_checkpoint(weakmodel, weak_tokenizer, args.outputdir, "best_weak")
+                best_val_loss = val_loss
+                best_weak_model = copy.deepcopy(weakmodel.state_dict())
+
+    ##########################################
+    # Train stronger model next
+    ##########################################
+    # Reset dataset
+    weaktraindata.refill_labelset(step=min(len(weaktraindata.data), args.strong_train_samples))
+    weakvaldata.refill_labelset(step=0)
+    train_dataloader = DataLoader(weaktraindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
+    valid_dataloader = DataLoader(weakvaldata, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
+    # Define model
+    strongerllm = AutoModelForCausalLM.from_pretrained(
+        args.strong_model_path,
+        torch_dtype=torch.float16 if "gpt2" not in args.strong_model_path else torch.float32,
+        cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache",
+    )
+    if "gpt2" not in args.weak_model_path:
+        strongerllm = get_peft_model(strongerllm, peft_config)
+        strongerllm.print_trainable_parameters()
+    strongermodel = KnowledgeLLM(strongerllm, stronger_tokenizer)
+    strongermodel = weakmodel.to(device)
+
+    if os.path.exists(args.pretrained_weak_model_path):
+        if "gpt2" not in train_args["model_path"]:
+            # config = PeftConfig.from_pretrained(peftpath)
+            strongerllm = PeftModel.from_pretrained(weakllm, args.pretrained_weak_model_path)
+        else:
+            state_dict = torch.load(os.path.join(args.pretrained_weak_model_path, "pytorch_model.pt"))
+            strongerllm.load_state_dict(state_dict)
+    else:
+        ## Initialise criterion and optimiser
+        criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
+
+        ## Optimiser
+        optimizer = AdamW(get_grouped_params(strongermodel), lr=args.learning_rate)
+
+        # Scheduler and math around the number of training steps.
+        num_update_steps_per_epoch = math.ceil(
+            len(weaktraindata) / (args.gradient_accumulation_steps * args.batch_size))
+        max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+
+        lr_scheduler = get_scheduler(
+            name=args.lr_scheduler_type,
+            optimizer=optimizer,
+            num_warmup_steps=args.num_warmup_steps,
+            num_training_steps=max_train_steps,
+        )
+
+        print("Start training the STRONGER MODEL")
+        best_val_loss = 10000
+        best_stronger_model = strongermodel
+        for epoch in range(args.num_train_epochs):
+            strongermodel.train()
+            strongermodel = train_one_epoch(
+                args,
+                epoch,
+                strongermodel,
+                train_dataloader,
+                optimizer,
+                lr_scheduler,
+                criterion,
+                tokenizer=stronger_tokenizer,
+            )
+            strongermodel.eval()
+            with torch.no_grad():
+                val_loss = eval_one_epoch(
+                    args,
+                    strongermodel,
+                    valid_dataloader,
+                    criterion,
+                    tokenizer=stronger_tokenizer,
+                )
+            val_ppl = math.exp(val_loss)
+            current_lr = optimizer.param_groups[0]["lr"]
+            logging(f"STRONGER MODEL Epoch {epoch} | Validation PPL: {val_ppl} | Learning rate: {current_lr}")
+            # Save models
+            if val_loss < best_val_loss:
+                logging(f"Saving best WEAK MODEL at Epoch {epoch}")
+                save_checkpoint(strongermodel, stronger_tokenizer, args.outputdir, "best_stronger")
+                best_val_loss = val_loss
+                best_stronger_model = copy.deepcopy(strongermodel.state_dict())
+        # Reload parameters from the best weak models
+        weakmodel.load_state_dict(best_weak_model)
+        strongermodel.load_state_dict(best_stronger_model)
+
 
     ##########################################
     # Train MAIN model
     ##########################################
-    # Load best WEAK model
-    weakmodel.load_state_dict(best_weak_model)
-
     ## Initialise data
     traindata = ActiveDataset(
         args.train_data_path,
@@ -199,7 +290,7 @@ def main(args):
     )
     with torch.no_grad():
         traindata.refill_labelset(step=0)
-        traindata = get_next_labelset(args, weak_tokenizer, weakmodel, traindata)
+        traindata = get_next_labelset(args, weak_tokenizer, weakmodel, traindata, strongerset=(stronger_tokenizer, strongermodel))
         traindata.tokenizer = tokenizer
         valdata.refill_labelset(step=0)
         valdata = get_next_labelset(args, weak_tokenizer, weakmodel, valdata)
@@ -207,6 +298,7 @@ def main(args):
 
     train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
     valid_dataloader = DataLoader(valdata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
+    # Initialise model
     llm = AutoModelForCausalLM.from_pretrained(
         args.model_path,
         torch_dtype=torch.float16 if "gpt2" not in args.model_path else torch.float32,
@@ -216,6 +308,9 @@ def main(args):
         llm = get_peft_model(llm, peft_config)
         llm.print_trainable_parameters
     model = KnowledgeLLM(llm, tokenizer).to(device)
+
+    # Initialise criterion
+    criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
     optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
     num_update_steps_per_epoch = math.ceil(len(traindata) / (args.gradient_accumulation_steps * args.batch_size))
     max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
@@ -237,7 +332,7 @@ def main(args):
             train_dataloader,
             optimizer,
             lr_scheduler,
-            criterion,
+            logconf_loss_fn() if args.criterion == "logconf" else criterion,
             tokenizer=tokenizer,
         )
         model.eval()
@@ -345,57 +440,48 @@ def calc_metrics(output, label):
         return span_results["overall"][2], slu_f1["overall"][2]
 
 
-def get_next_labelset(args, tokenizer, model, traindata):
+def get_next_labelset(args, tokenizer, model, traindata, strongerset=None):
     traindata.preprocess = False
+    if strongerset is not None:
+        stronger_tokenizer, strongermodel = strongerset
     active_loader = DataLoader(traindata, batch_size=1, shuffle=False, collate_fn=collate_fn_active)
     firstpass_ids_dict = {}
     uncertainties = []
-    margin = 0.2
+    count = 0
     for batch in tqdm(active_loader):
         slurp_ids, sequences, nbest, label = batch
-        if args.asrplace == "weak" or args.asrplace == "both" and nbest[0] != []:
-            firstpass_ids_dict[slurp_ids[0]] = []
-            # nbest[0].append([tokenizer(sequences[0]).input_ids])  # Adding reference
-            tokenized_seq = torch.tensor([nbest[0][0][0]]).to(device)
-            outputs = model.generate_beam(
-                tokenized_seq,
-                max_new_tokens=64,
-                beamsize=1,
-            )
-            lengths = torch.tensor([len(hyp.yseq) for hyp in outputs]).to(device)
-            logplist = torch.stack([hyp.cumscore for hyp in outputs])
-            predictive_entropy = get_cascaded_uncertainty(model, nbest[0], outputs, tokenizer, lengths)
-            uncertainties.append(predictive_entropy.item())
-            firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(outputs[0].yseq).split("</s>")[0], predictive_entropy])
-        else:
-            tokenized_seq = tokenizer(sequences[0], return_tensors="pt").input_ids.to(device)
-            outputs = model.generate_beam(
-                tokenized_seq,
+        tokenized_seq = tokenizer(sequences[0], return_tensors="pt").input_ids.to(device)
+        outputs = model.generate_beam(
+            tokenized_seq,
+            max_new_tokens=64,
+            beamsize=5,
+        )
+        if strongerset is not None:
+            tokenized_seq_strong = stronger_tokenizer(sequences[0], return_tensors="pt").input_ids.to(device)
+            stronger_outputs = model.generate_beam(
+                tokenized_seq_strong,
                 max_new_tokens=64,
                 beamsize=5,
             )
-            lengths = torch.tensor([len(hyp.yseq) for hyp in outputs]).to(device)
-            # if nbest[0] != []:
-            #     predictive_entropy = get_cascaded_uncertainty(model, nbest[0], outputs, tokenizer, lengths)
-            # else:
-            logplist = torch.stack([hyp.cumscore for hyp in outputs])
+            lengths = torch.tensor([len(hyp.yseq) for hyp in stronger_outputs]).to(device)
+            logplist = torch.stack([hyp.cumscore for hyp in stronger_outputs])
             predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
-            logplist = (- logplist / lengths).tolist()
+            firstpass_ids_dict[slurp_ids[0]] = [[stronger_tokenizer.decode(stronger_outputs[0].yseq).split("</s>")[0], predictive_entropy]]
+            uncertainties.append(predictive_entropy)
+        else:
             firstpass_ids_dict[slurp_ids[0]] = []
-            for k, hyp in enumerate(outputs):
-                sluf1 = calc_metrics(tokenizer.decode(hyp.yseq).split("</s>")[0], json.loads(label[0]))[1]
-                if sluf1 > 1 - margin and args.unc_threshold >= 0:
-                    firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], 0])
-                elif sluf1 < margin and args.unc_threshold >= 0:
-                    firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], 10000])
-                else:
-                    firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], logplist[k]])
-            uncertainties.append(logplist[0])
-            # firstpass_ids_dict[slurp_ids[0]] = [[tokenizer.decode(output.yseq).split("</s>")[0], logplist[i]] for i, output in enumerate(outputs)]
+            uncertainties.append(0)
+        for k, hyp in enumerate(outputs):
+            firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], 0])
     uncertainties = sorted(uncertainties, reverse=True)
-    threshold = uncertainties[int(args.unc_threshold * len(uncertainties))] if args.unc_threshold >= 0 else args.unc_threshold
+    threshold = uncertainties[int(args.unc_threshold * len(uncertainties))]
     logging(f"Threshold for uncertainty: {threshold}")
-    traindata.update_with_firstpass(firstpass_ids_dict, threshold)
+    traindata.update_with_firstpass(
+        firstpass_ids_dict,
+        threshold,
+        update_label=strongerset is not None,
+        update_delib=args.task=="deliberation",
+    )
     traindata.preprocess = True
     return traindata
 
@@ -414,7 +500,7 @@ def train_one_epoch(args, epoch, model, train_dataloader, optimizer, lr_schedule
     start = time.time()
     kgloss = 0
     for i, batch in enumerate(train_dataloader):
-        inputs, labels, nbest_prompt = batch
+        inputs, labels, nbest_prompt, values = batch
         with torch.cuda.amp.autocast():
             output, labels, knowledgeoutput = model(
                 inputs,
@@ -423,7 +509,11 @@ def train_one_epoch(args, epoch, model, train_dataloader, optimizer, lr_schedule
             )
             logits = output.logits
             seplosses = None
-            loss = criterion(logits.view(-1, logits.size(-1)), labels.reshape(-1))
+            if isinstance(criterion, torch.nn.CrossEntropyLoss):
+                loss = criterion(logits.view(-1, logits.size(-1)), labels.reshape(-1))
+            else:
+                step_frac = (len(train_dataloader) * epoch + i) / len(train_dataloader) / args.num_train_epochs
+                loss = criterion(logits, labels, step_frac, values)
             loss = loss / args.gradient_accumulation_steps
         loss.backward()
 
@@ -445,7 +535,7 @@ def eval_one_epoch(args, model, valid_dataloader, criterion, knowledge=None, tok
     total_kgloss = 0.
     total_kgtokens = 0
     for i, batch in enumerate(valid_dataloader):
-        inputs, labels, nbest_prompt = batch
+        inputs, labels, nbest_prompt, values = batch
         with torch.cuda.amp.autocast():
             output, labels, knowledgeoutput = model(
                 inputs,
@@ -477,7 +567,31 @@ if __name__ == "__main__":
         help="Path to the weak supervisor model file",
     )
     parser.add_argument(
+        "--strong_model_path",
+        type=str,
+        default="gpt2",
+        help="Path to the weak supervisor model file",
+    )
+    parser.add_argument(
+        "--pretrained_weak_model_path",
+        type=str,
+        default="",
+        help="Path to the weak supervisor model file",
+    )
+    parser.add_argument(
+        "--pretrained_strong_model_path",
+        type=str,
+        default="",
+        help="Path to the weak supervisor model file",
+    )
+    parser.add_argument(
         "--weak_train_samples",
+        type=int,
+        default=2000,
+        help="Data samples to train weak model",
+    )
+    parser.add_argument(
+        "--strong_train_samples",
         type=int,
         default=2000,
         help="Data samples to train weak model",
@@ -487,6 +601,12 @@ if __name__ == "__main__":
         type=str,
         default="./hf_models",
         help="Path to the train data file",
+    )
+    parser.add_argument(
+        "--weak_train_path",
+        type=str,
+        default="./hf_models",
+        help="Path to the weak model train data file",
     )
     parser.add_argument(
         "--val_data_path",
@@ -590,6 +710,12 @@ if __name__ == "__main__":
         help="Schema config",
     )
     parser.add_argument(
+        "--criterion",
+        type=str,
+        default="xent",
+        help="Loss function",
+    )
+    parser.add_argument(
         "--use_lora",
         type=str,
         default="false",
@@ -618,6 +744,12 @@ if __name__ == "__main__":
         type=float,
         default=0.0,
         help="Portion to be considered as uncertain",
+    )
+    parser.add_argument(
+        "--auxconfalpha",
+        type=float,
+        default=0.0,
+        help="How much to use weak label",
     )
     parser.add_argument(
         "--num_candidates",
