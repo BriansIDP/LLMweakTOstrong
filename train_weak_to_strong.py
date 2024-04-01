@@ -2,7 +2,6 @@ import os
 import random
 import argparse
 import math
-import pickle
 import time
 import copy
 import json
@@ -19,7 +18,7 @@ from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 from peft import PeftConfig, PeftModel
 from torch.utils.data import DataLoader
 
-from dataset import SupervisedDataset, collate_fn, ActiveDataset, collate_fn_active
+from dataset import collate_fn, ActiveDataset, collate_fn_active
 from data.prompt import prompts
 from knowledgemodel import KnowledgeLLM
 from scoring.evaluation.metrics import ErrorMetric
