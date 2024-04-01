@@ -1,5 +1,11 @@
 # Weak to Strong Alignment for Slot Filling
 
+## Requirements
+torch==2.0.1 \
+transformers==4.35.0 \
+peft==0.3.0
+
+
 ## Training
 Use `train.sh` to run training
 
@@ -41,3 +47,11 @@ Some infernece params:
 `--calibration_t`: Not used. Keep this setting  \
 `--tag`: Tagging appended at the end of output file name to distinguish between inference runs. "upperbound" means using reference rather than ASR hyps. \
 `--iteration`: Number of deliberation iterations. We can have more iterations by feeding the output back to the input to do another round of deliberation which leads to marginal improvements. \
+
+## Scoring
+`cd scoring` \
+`python process.py <path_to_your_inference_output>`, e.g. ../exp/SLURP_w2s/SLURP_gpt2_vicuna7b_2000_samples_weak500to2000/output_medium_top1upperbound_iter1.json \
+You will get one .jsonl file that can be scored using the official SLURP evaluation. \
+
+`cd evaluation` \
+`bash eval.sh`: Note you need to modify the path after `-p` \
