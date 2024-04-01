@@ -195,7 +195,7 @@ def main(args):
     strongerllm = AutoModelForCausalLM.from_pretrained(
         args.strong_model_path,
         torch_dtype=torch.float16 if "gpt2" not in args.strong_model_path else torch.float32,
-        cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache",
+        cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache", # Should be changed to your local cache dir
     )
     if "gpt2" not in args.strong_model_path:
         strongerllm = get_peft_model(strongerllm, peft_config)
@@ -306,7 +306,7 @@ def main(args):
     llm = AutoModelForCausalLM.from_pretrained(
         args.model_path,
         torch_dtype=torch.float16 if "gpt2" not in args.model_path else torch.float32,
-        cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache",
+        cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache", # Should be changed to your local cache dir
     )
     if "gpt2" not in args.model_path and args.use_lora == "true":
         llm = get_peft_model(llm, peft_config)
