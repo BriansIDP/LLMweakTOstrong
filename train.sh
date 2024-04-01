@@ -1,26 +1,40 @@
 . /home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/MultiModal/espnet/tools/anaconda/etc/profile.d/conda.sh && conda deactivate && conda activate videollama
 
-nsample=5000
+nsample=2000
+weaksample=500
+strongsample=2000
 # expdir="exp/SLURP_active/SLURP_vicuna7bv1.5_${nsample}_samples_qko_reset200_b5"
-expdir="exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsample}_samples_weak500to5000_normal"
-# expdir="exp/SLURP/SLURP_llama13b_${nsample}_nbest_samples_zeroshot"
+# expdir="exp/SLURP_w2s/SLURP_vicuna7b_vicuna7b_${nsample}_samples_weak${weaksample}to${strongsample}"
+expdir="exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsample}_samples_weak${weaksample}to${strongsample}_humanannot_allparam"
 
-# trainfile=data/trainlabel_norm_${nsample}.json
+# trainfile=data/trainlabel_nbest_debug.json
 trainfile=data/trainlabel_nbest_${nsample}.json
 # trainfile=data/validlabel_nbest.json
-trainweakfile=data/trainlabel_exclusive_5000.json
-# valfile=data/validlabel_norm.json
+
+trainweakfile=data/trainlabel_exclusive_${strongsample}.json
+
+# valfile=data/trainlabel_nbest_debug.json
 valfile=data/validlabel_nbest.json
+
+
+# weakmodel=ckpt/vicuna-7b-v1.5
+weakmodel=gpt2
+
+
+pretrained_weak_model_path=exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsample}_samples_weak${weaksample}to${strongsample}/checkpoint.best_weak
+pretrained_strong_model_path=exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsample}_samples_weak${weaksample}to${strongsample}/checkpoint.best_stronger
 
 # expdir="exp/debug"
 mkdir -p $expdir
 python train_weak_to_strong.py \
     --model_path ckpt/vicuna-7b-v1.5 \
-    --weak_model_path gpt2 \
-    --strong_model_path gpt2 \
-    --weak_train_samples 500 \
-    --strong_train_samples 5000 \
-    --batch_size 3 \
+    --weak_model_path $weakmodel \
+    --strong_model_path $weakmodel \
+    --pretrained_weak_model_path $pretrained_weak_model_path \
+    --pretrained_strong_model_path $pretrained_strong_model_path \
+    --weak_train_samples $weaksample \
+    --strong_train_samples $strongsample \
+    --batch_size 1 \
     --eval_batch_size 8 \
     --learning_rate 2e-5 \
     --gradient_accumulation_steps 2 \
@@ -36,20 +50,10 @@ python train_weak_to_strong.py \
     --KBdrop 0.0 \
     --maxKBsize 0 \
     --lora_config data/lora_config.json \
-    --task normal \
+    --task human_annotation \
     --asrplace none \
     --num_candidates 1 \
     # --criterion logconf \
     # --unc_threshold 0.5 \
     # --selflabelling \
     # --topn 10 \
-    # --tag LKI \
-
-    # ckpt/vicuna-7b-v1.5 \
-    # ckpt/llama-2-13b-hf \
-    # --model_path ckpt/vicuna-7b-v1.5 \
-    # --model_path ckpt/vicuna-13b-v1.5/ \
-    # --knowledge_embs data/knowledge/knowledge_slot_vicuna-7b-v1.5.pt \
-    # --resume exp/slurp_llama13b_baseline_25000_samples_noschema_allparam2/checkpoint.ep.18 \
-    # --use_attention true \
-    # --nquery 1 \

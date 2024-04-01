@@ -106,7 +106,7 @@ def main(args):
     weakllm = AutoModelForCausalLM.from_pretrained(
         args.weak_model_path,
         torch_dtype=torch.float16 if "gpt2" not in args.weak_model_path else torch.float32,
-        cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache",
+        cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache", # Should be changed to your local cache dir
     )
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -123,7 +123,7 @@ def main(args):
     weakmodel = weakmodel.to(device)
 
     if os.path.exists(args.pretrained_weak_model_path):
-        if "gpt2" not in train_args["model_path"]:
+        if "gpt2" not in args.weak_model_path:
             # config = PeftConfig.from_pretrained(peftpath)
             weakllm = PeftModel.from_pretrained(weakllm, args.pretrained_weak_model_path)
         else:
@@ -181,6 +181,7 @@ def main(args):
                 save_checkpoint(weakmodel, weak_tokenizer, args.outputdir, "best_weak")
                 best_val_loss = val_loss
                 best_weak_model = copy.deepcopy(weakmodel.state_dict())
+        weakmodel.load_state_dict(best_weak_model)
 
     ##########################################
     # Train stronger model next
@@ -196,18 +197,18 @@ def main(args):
         torch_dtype=torch.float16 if "gpt2" not in args.strong_model_path else torch.float32,
         cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache",
     )
-    if "gpt2" not in args.weak_model_path:
+    if "gpt2" not in args.strong_model_path:
         strongerllm = get_peft_model(strongerllm, peft_config)
         strongerllm.print_trainable_parameters()
     strongermodel = KnowledgeLLM(strongerllm, stronger_tokenizer)
-    strongermodel = weakmodel.to(device)
+    strongermodel = strongermodel.to(device)
 
-    if os.path.exists(args.pretrained_weak_model_path):
-        if "gpt2" not in train_args["model_path"]:
+    if os.path.exists(args.pretrained_strong_model_path):
+        if "gpt2" not in args.pretrained_strong_model_path:
             # config = PeftConfig.from_pretrained(peftpath)
-            strongerllm = PeftModel.from_pretrained(weakllm, args.pretrained_weak_model_path)
+            strongerllm = PeftModel.from_pretrained(strongerllm, args.pretrained_strong_model_path)
         else:
-            state_dict = torch.load(os.path.join(args.pretrained_weak_model_path, "pytorch_model.pt"))
+            state_dict = torch.load(os.path.join(args.pretrained_strong_model_path, "pytorch_model.pt"))
             strongerllm.load_state_dict(state_dict)
     else:
         ## Initialise criterion and optimiser
@@ -262,7 +263,6 @@ def main(args):
                 best_val_loss = val_loss
                 best_stronger_model = copy.deepcopy(strongermodel.state_dict())
         # Reload parameters from the best weak models
-        weakmodel.load_state_dict(best_weak_model)
         strongermodel.load_state_dict(best_stronger_model)
 
 
@@ -290,11 +290,15 @@ def main(args):
     )
     with torch.no_grad():
         traindata.refill_labelset(step=0)
-        traindata = get_next_labelset(args, weak_tokenizer, weakmodel, traindata, strongerset=(stronger_tokenizer, strongermodel))
+        if args.task != "human_annotation":
+            traindata = get_next_labelset(args, weak_tokenizer, weakmodel, traindata, strongerset=(stronger_tokenizer, strongermodel))
         traindata.tokenizer = tokenizer
         valdata.refill_labelset(step=0)
-        valdata = get_next_labelset(args, weak_tokenizer, weakmodel, valdata)
+        if args.task != "human_annotation":
+            valdata = get_next_labelset(args, weak_tokenizer, weakmodel, valdata)
         valdata.tokenizer = tokenizer
+    weakmodel.cpu()
+    strongermodel.cpu()
 
     train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
     valid_dataloader = DataLoader(valdata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
@@ -304,7 +308,7 @@ def main(args):
         torch_dtype=torch.float16 if "gpt2" not in args.model_path else torch.float32,
         cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache",
     )
-    if "gpt2" not in args.model_path:
+    if "gpt2" not in args.model_path and args.use_lora == "true":
         llm = get_peft_model(llm, peft_config)
         llm.print_trainable_parameters
     model = KnowledgeLLM(llm, tokenizer).to(device)
@@ -458,7 +462,7 @@ def get_next_labelset(args, tokenizer, model, traindata, strongerset=None):
         )
         if strongerset is not None:
             tokenized_seq_strong = stronger_tokenizer(sequences[0], return_tensors="pt").input_ids.to(device)
-            stronger_outputs = model.generate_beam(
+            stronger_outputs = strongermodel.generate_beam(
                 tokenized_seq_strong,
                 max_new_tokens=64,
                 beamsize=5,

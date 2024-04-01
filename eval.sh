@@ -4,7 +4,7 @@
 asrname="medium"
 # asrfile="data/${asrname}_nbest_zeroshot.json"
 asrfile="data/${asrname}_2000.json"
-nsamples=5000
+nsamples=2000
 # expdir="exp/SLURP_w2s/SLURP_vicuna7bASR_vicuna7b_${nsamples}_samples_weak1000sample"
 expdir="exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsamples}_samples_weak500to2000"
 # expdir="exp/SLURP/SLURP_vicuna13bv1.5_${nsamples}_samples_zeroshot_baseline2"
