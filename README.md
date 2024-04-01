@@ -25,3 +25,19 @@ Some specific training params:
 `--task`: Choose from: "normal", "deliberation" and "human_annotation". "normal" uses stronger model labels without deliberation. "human_annotation" uses human labels. \
 `--asrplace`: Where to use ASR hypotheses, choose from: "both", "none", "weak", "main". Just keep "none" for now. \
 `--num_candidates`: Weaker model may generate more than 1 hypotheses, so we can use multiple of those as input to deliberate. \
+
+## Inference
+Use `eval.sh` for inference
+
+Some infernece params:
+
+`--model_path`: Give the exp dir which contains weaker model, stronger model and main LLM checkpoints \
+`--main_ckpt`: Which checkpoint to use for the main LLM \
+`--recogfile`: Test data file containing reference and ASR output utterances \
+`--topn`: Keep 1 for now \
+`--samples`: Use 2000 sample setting for now \
+`--asrname`: Keep medium for now - Whisper medium model output \
+`--maxKBsize`: Not used. Keep this setting \
+`--calibration_t`: Not used. Keep this setting  \
+`--tag`: Tagging appended at the end of output file name to distinguish between inference runs. "upperbound" means using reference rather than ASR hyps. \
+`--iteration`: Number of deliberation iterations. We can have more iterations by feeding the output back to the input to do another round of deliberation which leads to marginal improvements. \
