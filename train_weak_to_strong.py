@@ -365,7 +365,7 @@ def save_checkpoint(model, tokenizer, outputdir, epoch):
     # save tokenizer
     tokenizer.save_pretrained(fulloutput)
     # save configuration
-    if model.llm.config._name_or_path == "gpt2":
+    if "gpt2" in model.llm.config._name_or_path:
         torch.save(model.llm.state_dict(), os.path.join(fulloutput, "pytorch_model.pt"))
     else:
         model.llm.save_pretrained(fulloutput)

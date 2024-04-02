@@ -1,11 +1,11 @@
-. /home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/MultiModal/espnet/tools/anaconda/etc/profile.d/conda.sh && conda deactivate && conda activate videollama
+# . /home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/MultiModal/espnet/tools/anaconda/etc/profile.d/conda.sh && conda deactivate && conda activate videollama
 
 nsample=2000
 weaksample=500
 strongsample=2000
 # expdir="exp/SLURP_active/SLURP_vicuna7bv1.5_${nsample}_samples_qko_reset200_b5"
 # expdir="exp/SLURP_w2s/SLURP_vicuna7b_vicuna7b_${nsample}_samples_weak${weaksample}to${strongsample}"
-expdir="exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsample}_samples_weak${weaksample}to${strongsample}_humanannot_allparam"
+# expdir="exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsample}_samples_weak${weaksample}to${strongsample}_humanannot_allparam"
 
 # trainfile=data/trainlabel_nbest_debug.json
 trainfile=data/trainlabel_nbest_${nsample}.json
@@ -18,16 +18,22 @@ valfile=data/validlabel_nbest.json
 
 
 # weakmodel=ckpt/vicuna-7b-v1.5
-weakmodel=gpt2
+weakmodel=/mnt/nvme_share/cuizy/models/gpt2
+modelpath=/mnt/nvme_share/cuizy/models/llama-2-7b-hf
 
 
-pretrained_weak_model_path=exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsample}_samples_weak${weaksample}to${strongsample}/checkpoint.best_weak
-pretrained_strong_model_path=exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsample}_samples_weak${weaksample}to${strongsample}/checkpoint.best_stronger
+# pretrained_weak_model_path=exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsample}_samples_weak${weaksample}to${strongsample}/checkpoint.best_weak
+# pretrained_strong_model_path=exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsample}_samples_weak${weaksample}to${strongsample}/checkpoint.best_stronger
+pretrained_weak_model_path=exp/debug/checkpoint.best_weak
+pretrained_strong_model_path=exp/debug/checkpoint.best_stronger
 
-# expdir="exp/debug"
+
+expdir="exp/debug"
 mkdir -p $expdir
+
+CUDA_VISIBLE_DEVICES=4 \
 python train_weak_to_strong.py \
-    --model_path ckpt/vicuna-7b-v1.5 \
+    --model_path $modelpath \
     --weak_model_path $weakmodel \
     --strong_model_path $weakmodel \
     --pretrained_weak_model_path $pretrained_weak_model_path \
