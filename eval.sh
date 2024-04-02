@@ -1,4 +1,4 @@
-. /home/gs534/rds/hpc-work/work/espnet/tools/anaconda/etc/profile.d/conda.sh && conda deactivate && conda activate llama
+# . /home/gs534/rds/hpc-work/work/espnet/tools/anaconda/etc/profile.d/conda.sh && conda deactivate && conda activate llama
 
 # python get_knowledge_encodings.py --model_name vicuna-7b-v1.5-16k
 asrname="medium"
@@ -6,9 +6,12 @@ asrname="medium"
 asrfile="data/${asrname}_2000.json"
 nsamples=2000
 # expdir="exp/SLURP_w2s/SLURP_vicuna7bASR_vicuna7b_${nsamples}_samples_weak1000sample"
-expdir="exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsamples}_samples_weak500to2000"
+# expdir="exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsamples}_samples_weak500to2000"
+expdir="exp/debug"
 # expdir="exp/SLURP/SLURP_vicuna13bv1.5_${nsamples}_samples_zeroshot_baseline2"
 logfile="$expdir/eval_log.txt"
+
+CUDA_VISIBLE_DEVICES=0 \
 python inference.py \
     --model_path $expdir \
     --main_ckpt checkpoint.best \
