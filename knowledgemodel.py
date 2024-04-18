@@ -1,40 +1,18 @@
-import argparse
-import logging
-import math
-import os
-from time import time
-from copy import deepcopy
-import random
-import json
-from copy import deepcopy
-
 import numpy as np
 import six
 import torch
-from transformers import AutoModelForCausalLM
-from transformers import AutoModelForSeq2SeqLM
 from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
-from peft import PeftConfig, PeftModel
-
-
-default_peft_config = LoraConfig(
-    task_type=TaskType.CAUSAL_LM,
-    inference_mode=False,
-    r=8,
-    lora_alpha=32,
-    lora_dropout=0.1,
-    # target_modules=["q_proj", "v_proj", "out_proj", "fc1", "fc2"],
-)
 
 
 class Hypo:
+    # 每一个beam对应一个hypo
     def __init__(self):
-        self.yseq = []
-        self.scores = []
-        self.cumscore = 0.0
-        self.normscore = 0.0
-        self.entropy = []
-        self.treetrack = []
+        self.yseq = []              # sequence
+        self.scores = []            # score for each token
+        self.cumscore = 0.0         # sum of score
+        self.normscore = 0.0        # sum of score / length
+        self.entropy = []           # entropy for each token
+        self.treetrack = []         
         self.completed = []
         self.completed_state = []
 
@@ -95,45 +73,7 @@ class KnowledgeLLM(torch.nn.Module):
             output_hidden_states=True,
             return_dict=True,
         )
-        knowledgeoutput = None
-        if self.useptr and knowledgeoutput is None:
-            attention_masks = self.process_label_copy(labels, values)
-            outputs.logits = self.calc_pointer(outputs, attention_masks)
-        return outputs, labels, knowledgeoutput
-
-    def calc_pointer(self, outputs, attention_masks, kflag=False):
-        hidden_state = outputs.hidden_states[-1]
-        if self.use_lora:
-            atten_weights, ptr_output = self.ptrmodel(self.llm.model.lm_head.weight, hidden_state, attention_masks)
-        else:
-            atten_weights, ptr_output = self.ptrmodel(self.llm.lm_head.weight, hidden_state, attention_masks)
-        pointer_prob = torch.sigmoid(self.ptr_proj(torch.cat([hidden_state, ptr_output], dim=-1)))
-        # print(pointer_prob[0, -1].item())
-        llm_prob = torch.softmax(outputs.logits, dim=-1)
-        final_prob = pointer_prob * atten_weights + (1 - pointer_prob) * llm_prob
-        return torch.log(final_prob)
-
-    def process_label_copy(self, labels, values, kflag=False):
-        attention_masks = []
-        for i, label in enumerate(labels):
-            treetrack = []
-            completed = []
-            completed_state = []
-            attention_mask = []
-            treetrack, nexttokens, completed, completed_state = values[i].get_next_state(
-                0, treetrack, completed, completed_state, kflag=kflag)
-            for label_idx in label:
-                label_idx = label_idx.item()
-                if label_idx != -1:
-                    step_mask = label.new_ones(self.llm.config.vocab_size)
-                    step_mask[nexttokens] = 0
-                    treetrack, nexttokens, completed, completed_state = values[i].get_next_state(
-                        label_idx, treetrack, completed, completed_state, kflag=kflag)
-                else:
-                    step_mask = label.new_zeros(self.llm.config.vocab_size)
-                attention_mask.append(step_mask)
-            attention_masks.append(torch.stack(attention_mask, dim=0))
-        return torch.stack(attention_masks, dim=0)
+        return outputs, labels
 
     def get_embedding(self, input_ids):
         if self.use_lora:
@@ -259,3 +199,6 @@ class KnowledgeLLM(torch.nn.Module):
             hyp.normscore = hyp.cumscore / len(hyp.yseq)
         sorted_hyps = sorted(finished_beam, key=lambda finished_beam: finished_beam.normscore, reverse=True)
         return sorted_hyps
+
+    def scoring(self, input_sequence):
+        pass

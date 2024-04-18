@@ -35,7 +35,7 @@ from knowledgemodel import KnowledgeLLM
 from scoring.evaluation.metrics import ErrorMetric
 from scoring.evaluation.util import format_results, load_predictions, load_gold_data
 from scoring.evaluation.normalizers.english import EnglishTextNormalizer
-from loss import logconf_loss_fn
+from loss import logconf_loss_fn, logconf_step_loss_fn
 
 normaliser = EnglishTextNormalizer()
 
@@ -79,6 +79,7 @@ def main(args):
     os.system("cp {} {}".format(args.lora_config, os.path.join(args.outputdir, 'lora_config.json')))
     os.system("cp {} {}".format("train_weak_to_strong.py", os.path.join(args.outputdir, "train.py")))
     os.system("cp {} {}".format("knowledgemodel.py", os.path.join(args.outputdir, "model.py")))
+    os.system("cp {} {}".format("loss.py", os.path.join(args.outputdir, "loss.py")))
 
     ## Meta data
     with open("data/slotlist{}.json".format("_zero" if "_zero" in args.outputdir else "")) as fin:
@@ -88,213 +89,77 @@ def main(args):
         knowledgebase = json.load(fin)
 
     ## Initialise data
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True, use_fast=("pythia" in args.model_path))
     LLMtype = "vicuna"
     # if "llama-2" in args.model_path:
     #     LLMtype = "llama2"
-    weak_tokenizer = AutoTokenizer.from_pretrained(args.weak_model_path, use_fast=("pythia" in args.weak_model_path), trust_remote_code=True)
-    stronger_tokenizer = AutoTokenizer.from_pretrained(args.strong_model_path, use_fast=("pythia" in args.weak_model_path), trust_remote_code=True)
-
-    ## Initialise data
-    weaktraindata = ActiveDataset(
-        args.weak_train_path,
-        weak_tokenizer,
-        slotdict,
-        slotstr,
-        prompts,
-        LLM=LLMtype,
-    )
-    weakvaldata = ActiveDataset(
-        args.val_data_path,
-        weak_tokenizer,
-        slotdict,
-        slotstr,
-        prompts,
-        LLM=LLMtype,
-    )
-
-    weaktraindata.refill_labelset(step=min(len(weaktraindata.data), args.weak_train_samples))
-    weakvaldata.refill_labelset(step=0)
-    train_dataloader = DataLoader(weaktraindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
-    valid_dataloader = DataLoader(weakvaldata, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
 
     ##########################################
-    # Train weak model first
+    # Load weak model first
     ##########################################
-    # Train weak model if task is "normal" or "deliberation"
-    # Define model
-    weakllm = AutoModelForCausalLM.from_pretrained(
-        args.weak_model_path,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
-        device_map="auto",
-        # cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache", # Should be changed to your local cache dir
-    )
-    peft_config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        inference_mode=False,
-        r=peft_params["lora_rank"],
-        lora_alpha=peft_params["lora_alpha"],
-        lora_dropout=peft_params["lora_dropout"],
-        target_modules=peft_params["lora_module"],
-    )
-    if "gpt2" not in args.weak_model_path and args.use_lora == "true":
-        weakllm = get_peft_model(weakllm, peft_config)
-        weakllm.print_trainable_parameters()
-    weakmodel = KnowledgeLLM(weakllm, weak_tokenizer)
-    # weakmodel = weakmodel.to(device)
-
-    if os.path.exists(args.pretrained_weak_model_path):
-        if os.path.exists(os.path.join(args.pretrained_weak_model_path, "pytorch_model.pt")):
-            state_dict = torch.load(os.path.join(args.pretrained_weak_model_path, "pytorch_model.pt"))
-            weakmodel.llm.load_state_dict(state_dict)
-        elif os.path.exists(os.path.join(args.pretrained_weak_model_path, "model.safetensors")):
-            llm = AutoModelForCausalLM.from_pretrained(
-                os.path.join(args.pretrained_weak_model_path),
-                torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
-                device_map="auto",
-            )
-            weakmodel.llm = llm
-        else:
-            load_sharded_checkpoint(weakmodel.llm, os.path.join(args.pretrained_weak_model_path))
-    elif args.task != "human_annotation":
-        ## Initialise criterion and optimiser
-        criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
-
-        ## Optimiser
-        optimizer = AdamW(get_grouped_params(weakmodel), lr=args.learning_rate)
-
-        # Scheduler and math around the number of training steps.
-        num_update_steps_per_epoch = math.ceil(
-            len(weaktraindata) / (args.gradient_accumulation_steps * args.batch_size))
-        max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-
-        lr_scheduler = get_scheduler(
-            name=args.lr_scheduler_type,
-            optimizer=optimizer,
-            num_warmup_steps=args.num_warmup_steps,
-            num_training_steps=max_train_steps,
-        )
-
-        print("Start training WEAK MODEL")
-        best_val_loss = 10000
-        best_weak_model = weakmodel
-        for epoch in range(args.num_train_epochs):
-            weakmodel.train()
-            weakmodel = train_one_epoch(
-                args,
-                epoch,
-                weakmodel,
-                train_dataloader,
-                optimizer,
-                lr_scheduler,
-                criterion,
-                tokenizer=weak_tokenizer,
-            )
+    if args.task == "normal":
+        weak_tokenizer = AutoTokenizer.from_pretrained(args.weak_model_path, use_fast=("pythia" in args.weak_model_path), trust_remote_code=True)
+        if os.path.exists(args.pretrained_weak_model_path):
+            if os.path.exists(os.path.join(args.pretrained_weak_model_path, "model.safetensors")):
+                weakllm = AutoModelForCausalLM.from_pretrained(
+                    os.path.join(args.pretrained_weak_model_path),
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
+                    device_map="auto",
+                )
+            else:
+                weakllm = AutoModelForCausalLM.from_pretrained(
+                    args.weak_model_path,
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
+                    device_map="auto",
+                )
+                if os.path.exists(os.path.join(args.pretrained_weak_model_path, "pytorch_model.pt")):
+                    state_dict = torch.load(os.path.join(args.pretrained_weak_model_path, "pytorch_model.pt"))
+                    weakllm.load_state_dict(state_dict)
+                else:
+                    load_sharded_checkpoint(weakllm, os.path.join(args.pretrained_weak_model_path))
+            weakmodel = KnowledgeLLM(weakllm, weak_tokenizer)
             weakmodel.eval()
-            with torch.no_grad():
-                val_loss = eval_one_epoch(
-                    args,
-                    weakmodel,
-                    valid_dataloader,
-                    criterion,
-                    tokenizer=weak_tokenizer,
-                )
-            val_ppl = math.exp(val_loss)
-            current_lr = optimizer.param_groups[0]["lr"]
-            logging(f"WEAK MODEL Epoch {epoch} | Validation PPL: {val_ppl} | Learning rate: {current_lr}")
-            # Save models
-            if val_loss < best_val_loss:
-                logging(f"Saving best WEAK MODEL at Epoch {epoch}")
-                save_checkpoint(weakmodel, weak_tokenizer, args.outputdir, "best_weak")
-                best_val_loss = val_loss
-                best_weak_model = copy.deepcopy(weakmodel.state_dict())
-        weakmodel.load_state_dict(best_weak_model)
-
-    ##########################################
-    # Train stronger model next
-    ##########################################
-    # Train stronger model if task is "deliberation"
-    # Reset dataset
-    weaktraindata.refill_labelset(step=min(len(weaktraindata.data), args.strong_train_samples))
-    weakvaldata.refill_labelset(step=0)
-    train_dataloader = DataLoader(weaktraindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
-    valid_dataloader = DataLoader(weakvaldata, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
-    # Define model
-    strongerllm = AutoModelForCausalLM.from_pretrained(
-        args.strong_model_path,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
-        device_map="auto",
-        # cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache", # Should be changed to your local cache dir
-    )
-    if "gpt2" not in args.strong_model_path and args.use_lora == "true":
-        strongerllm = get_peft_model(strongerllm, peft_config)
-        strongerllm.print_trainable_parameters()
-    strongermodel = KnowledgeLLM(strongerllm, stronger_tokenizer)
-    # strongermodel = strongermodel.to(device)
-
-    if os.path.exists(args.pretrained_strong_model_path):
-        if "gpt2" not in args.pretrained_strong_model_path:
-            # config = PeftConfig.from_pretrained(peftpath)
-            strongerllm = PeftModel.from_pretrained(strongerllm, args.pretrained_strong_model_path)
         else:
-            state_dict = torch.load(os.path.join(args.pretrained_strong_model_path, "pytorch_model.pt"))
-            strongerllm.load_state_dict(state_dict)
-    elif args.task == "deliberation":
-        ## Initialise criterion and optimiser
-        criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
-
-        ## Optimiser
-        optimizer = AdamW(get_grouped_params(strongermodel), lr=args.learning_rate)
-
-        # Scheduler and math around the number of training steps.
-        num_update_steps_per_epoch = math.ceil(
-            len(weaktraindata) / (args.gradient_accumulation_steps * args.batch_size))
-        max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-
-        lr_scheduler = get_scheduler(
-            name=args.lr_scheduler_type,
-            optimizer=optimizer,
-            num_warmup_steps=args.num_warmup_steps,
-            num_training_steps=max_train_steps,
-        )
-
-        print("Start training the STRONGER MODEL")
-        best_val_loss = 10000
-        best_stronger_model = strongermodel
-        for epoch in range(args.num_train_epochs):
-            strongermodel.train()
-            strongermodel = train_one_epoch(
-                args,
-                epoch,
-                strongermodel,
-                train_dataloader,
-                optimizer,
-                lr_scheduler,
-                criterion,
-                tokenizer=stronger_tokenizer,
-            )
-            strongermodel.eval()
-            with torch.no_grad():
-                val_loss = eval_one_epoch(
-                    args,
-                    strongermodel,
-                    valid_dataloader,
-                    criterion,
-                    tokenizer=stronger_tokenizer,
-                )
-            val_ppl = math.exp(val_loss)
-            current_lr = optimizer.param_groups[0]["lr"]
-            logging(f"STRONGER MODEL Epoch {epoch} | Validation PPL: {val_ppl} | Learning rate: {current_lr}")
-            # Save models
-            if val_loss < best_val_loss:
-                logging(f"Saving best WEAK MODEL at Epoch {epoch}")
-                save_checkpoint(strongermodel, stronger_tokenizer, args.outputdir, "best_stronger")
-                best_val_loss = val_loss
-                best_stronger_model = copy.deepcopy(strongermodel.state_dict())
-        # Reload parameters from the best weak models
-        strongermodel.load_state_dict(best_stronger_model)
-
-
+            print("Error: Please input correct pretrained weak model path.")
+            return 0
+        
+    if args.task == "human_annotation":
+        weak_tokenizer = AutoTokenizer.from_pretrained(args.weak_model_path, use_fast=("pythia" in args.weak_model_path), trust_remote_code=True)
+        
+    if args.task == "multi_weak":
+        weak_model_list = []
+        weak_tokenizer_list = []
+        weak_model_names = args.weak_model_names.split(",")
+        for weak_model_name in weak_model_names:
+            pretrained_weak_model_path = os.path.join("exp/weak", weak_model_name, 'checkpoint.best')
+            weak_model_path = os.path.join("/mnt/nvme_share/cuizy/models", weak_model_name)
+            weak_tokenizer = AutoTokenizer.from_pretrained(weak_model_path, use_fast=("pythia" in weak_model_path), trust_remote_code=True)
+            if os.path.exists(pretrained_weak_model_path):
+                if os.path.exists(os.path.join(pretrained_weak_model_path, "model.safetensors")):
+                    weakllm = AutoModelForCausalLM.from_pretrained(
+                        os.path.join(pretrained_weak_model_path),
+                        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
+                        device_map="auto",
+                    )
+                else:
+                    weakllm = AutoModelForCausalLM.from_pretrained(
+                        weak_model_path,
+                        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
+                        device_map="auto",
+                    )
+                    if os.path.exists(os.path.join(pretrained_weak_model_path, "pytorch_model.pt")):
+                        state_dict = torch.load(os.path.join(pretrained_weak_model_path, "pytorch_model.pt"))
+                        weakllm.load_state_dict(state_dict)
+                    else:
+                        load_sharded_checkpoint(weakllm, os.path.join(pretrained_weak_model_path))
+                weakmodel = KnowledgeLLM(weakllm, weak_tokenizer)
+                weakmodel.eval()
+            else:
+                print("Error: Please input correct pretrained weak model path.")
+                return 0
+            weak_model_list.append(weakmodel)
+            weak_tokenizer_list.append(weak_tokenizer)
+    
+    
     ##########################################
     # Train MAIN model
     ##########################################
@@ -317,37 +182,47 @@ def main(args):
         asrplace=args.asrplace,
         num_candidates=args.num_candidates,
     )
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True, use_fast=("pythia" in args.model_path))
     with torch.no_grad():
         traindata.refill_labelset(step=0)
-        if args.task == "deliberation":
-            traindata = get_next_labelset(args, weak_tokenizer, weakmodel, traindata, strongerset=(stronger_tokenizer, strongermodel))
-        elif args.task == "normal":
+        if args.task == "normal":
             traindata = get_next_labelset(args, weak_tokenizer, weakmodel, traindata)
+            weakmodel.cpu()
+        elif args.task == "multi_weak":
+            traindata = get_next_labelset_multiweak(args, weak_tokenizer_list, weak_model_list, traindata)
+            # for weakmodel in weak_model_list:
+            #     weakmodel.cpu() 
+            del weak_model_list
+            del weak_tokenizer_list
         traindata.tokenizer = tokenizer
         valdata.refill_labelset(step=0)
         # if args.task != "human_annotation":
         #     valdata = get_next_labelset(args, weak_tokenizer, weakmodel, valdata)
         valdata.tokenizer = tokenizer
-    weakmodel.cpu()
-    strongermodel.cpu()
-
-    train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
+    if args.task == "multi_weak":
+        train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn_multiweak)
+    else:
+        train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
     valid_dataloader = DataLoader(valdata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
     # Initialise model
     llm = AutoModelForCausalLM.from_pretrained(
         args.model_path,
         torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
+        # torch_dtype=torch.float32,
         device_map="auto",
-        # cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache", # Should be changed to your local cache dir
     )
-    if "gpt2" not in args.model_path and args.use_lora == "true":
-        llm = get_peft_model(llm, peft_config)
-        llm.print_trainable_parameters
     # model = KnowledgeLLM(llm, tokenizer).to(device)
     model = KnowledgeLLM(llm, tokenizer)
+    del llm
 
     # Initialise criterion
-    criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
+    # criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
+    if args.criterion == "xent":
+        criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
+    elif args.criterion == "logconf":
+        criterion = logconf_loss_fn()
+    elif args.criterion == "logconf_step":
+        criterion = logconf_step_loss_fn()
     optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
     num_update_steps_per_epoch = math.ceil(len(traindata) / (args.gradient_accumulation_steps * args.batch_size))
     max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
@@ -362,23 +237,35 @@ def main(args):
     best_val_loss = 10000
     for epoch in range(args.num_train_epochs):
         model.train()
-        model = train_one_epoch(
-            args,
-            epoch,
-            model,
-            train_dataloader,
-            optimizer,
-            lr_scheduler,
-            logconf_loss_fn() if args.criterion == "logconf" else criterion,
-            tokenizer=tokenizer,
-        )
+        if args.task == "multi_weak":
+            model = train_one_epoch_multiweak(
+                args,
+                epoch,
+                model,
+                train_dataloader,
+                optimizer,
+                lr_scheduler,
+                criterion=criterion,
+                tokenizer=tokenizer,
+            )
+        else:
+            model = train_one_epoch(
+                args,
+                epoch,
+                model,
+                train_dataloader,
+                optimizer,
+                lr_scheduler,
+                criterion=criterion,
+                tokenizer=tokenizer,
+            )
         model.eval()
         with torch.no_grad():
             val_loss = eval_one_epoch(
                 args,
                 model,
                 valid_dataloader,
-                criterion,
+                criterion=torch.nn.CrossEntropyLoss(ignore_index=-1),
                 tokenizer=tokenizer,
             )
         val_ppl = math.exp(val_loss)
@@ -399,10 +286,10 @@ def save_checkpoint(model, tokenizer, outputdir, epoch):
     # save tokenizer
     tokenizer.save_pretrained(fulloutput)
     # save configuration
-    if "gpt2" in model.llm.config._name_or_path:
-        torch.save(model.llm.state_dict(), os.path.join(fulloutput, "pytorch_model.pt"))
-    else:
-        model.llm.save_pretrained(fulloutput)
+    # if "gpt2" in model.llm.config._name_or_path:
+    #     torch.save(model.llm.state_dict(), os.path.join(fulloutput, "pytorch_model.pt"))
+    # else:
+    model.llm.save_pretrained(fulloutput)
     return checkpoint
 
 
@@ -493,29 +380,14 @@ def get_next_labelset(args, tokenizer, model, traindata, strongerset=None):
             max_new_tokens=64,
             beamsize=5,
         )
-        # if strongerset is not None:
-        #     tokenized_seq_strong = stronger_tokenizer(sequences[0], return_tensors="pt").input_ids.to(model.llm.device)
-        #     stronger_outputs = strongermodel.generate_beam(
-        #         tokenized_seq_strong,
-        #         max_new_tokens=64,
-        #         beamsize=5,
-        #     )
-        #     lengths = torch.tensor([len(hyp.yseq) for hyp in stronger_outputs]).to(model.llm.device)
-        #     logplist = torch.stack([hyp.cumscore for hyp in stronger_outputs])
-        #     predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
-        #     firstpass_ids_dict[slurp_ids[0]] = [[stronger_tokenizer.decode(stronger_outputs[0].yseq).split("</s>")[0], predictive_entropy]]
-        #     uncertainties.append(predictive_entropy)
-        # else:
-        #     firstpass_ids_dict[slurp_ids[0]] = []
-        #     uncertainties.append(0)
         firstpass_ids_dict[slurp_ids[0]] = []
         lengths = torch.tensor([len(hyp.yseq) for hyp in outputs]).to(model.llm.device)
         logplist = torch.stack([hyp.cumscore for hyp in outputs])
         predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
         uncertainties.append(predictive_entropy)
         for k, hyp in enumerate(outputs):
-            # firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], torch.Tensor([0])])
-            firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], predictive_entropy])
+            # firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], predictive_entropy])
+            firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq, skip_special_tokens=True), predictive_entropy])
     uncertainties = sorted(uncertainties, reverse=True)
     threshold = uncertainties[int(args.unc_threshold * len(uncertainties))]
     logging(f"Threshold for uncertainty: {threshold}")
@@ -562,6 +434,8 @@ def get_next_labelset_multiweak(args, weak_tokenizer_list, weak_model_list, trai
     traindata.multi_weak = True
     return traindata
         
+def get_next_labelset_jointdecode(args, weak_tokenizer_list, weak_model_list, traindata):
+    pass
 
 
 def calc_predictive_entropy(logp, temperature, lengths):
@@ -606,6 +480,7 @@ def train_one_epoch(args, epoch, model, train_dataloader, optimizer, lr_schedule
             logging(f"Epoch {epoch} | Batch {i}/{trainsize} | PPL: {PPL} | time {elasped_time}")
     return model
 
+
 def train_one_epoch_multiweak(args, epoch, model, train_dataloader, optimizer, lr_scheduler, criterion, knowledge=None, tokenizer=None):
     optimizer.zero_grad()
     trainsize = len(train_dataloader)
@@ -616,6 +491,10 @@ def train_one_epoch_multiweak(args, epoch, model, train_dataloader, optimizer, l
         loss = 0
         with torch.cuda.amp.autocast():
             for inputs, labels, values in zip(inputs_list, total_label_list, values_list):
+                for key in inputs:
+                    inputs[key] = inputs[key].to(model.llm.device)
+                labels = labels.to(model.llm.device)
+                values = values.to(model.llm.device)
                 output, labels = model(inputs, labels, knowledge=knowledge)
                 logits = output.logits
                 if isinstance(criterion, torch.nn.CrossEntropyLoss):
@@ -842,7 +721,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--weak_model_names",
         type=str,
-        default="",
+        default="gpt2-large,opt-1.3b,pythia-1.4b",
         help="name of weak models. Saved in exp/weak/{weak_model_name}, only applied when task == multi_weak." 
     )
     parser.add_argument(

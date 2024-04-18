@@ -1,14 +1,3 @@
-# import debugpy
-
-# # 5678是debugpy服务器监听的端口号，确保这个端口在你的系统上是空闲的
-# debugpy.listen(('0.0.0.0', 5678))
-# print("⏳ Waiting for debugger to attach...")
-
-# # 让debugpy等待VSCode的调试器连接
-# debugpy.wait_for_client()
-# print("🚀 Debugger attached!")
-
-
 import os
 import random
 import argparse
@@ -23,13 +12,13 @@ from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
 from transformers import AutoTokenizer
 from transformers import AutoModelForCausalLM
+from transformers import AutoModelForSeq2SeqLM
 from transformers import SchedulerType, AdamW, get_scheduler
-from transformers.modeling_utils import load_sharded_checkpoint
 from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 from peft import PeftConfig, PeftModel
 from torch.utils.data import DataLoader
 
-from dataset import collate_fn, ActiveDataset, collate_fn_active, collate_fn_multiweak
+from dataset import collate_fn, ActiveDataset, collate_fn_active
 from data.prompt import prompts
 from knowledgemodel import KnowledgeLLM
 from scoring.evaluation.metrics import ErrorMetric
@@ -40,10 +29,9 @@ from loss import logconf_loss_fn
 normaliser = EnglishTextNormalizer()
 
 
-def set_seed(seed):
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
+device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+random.seed(1)
+torch.manual_seed(1)
 
 def logging(s, logging_=True, log_=True):
     if logging_:
@@ -67,18 +55,12 @@ def get_grouped_params(model):
     return optimizer_grouped_parameters
 
 def main(args):
-    # Set seed
-    if args.seed is not None:
-        set_seed(args.seed)
-
     # Save model configuration
     with open(os.path.join(args.outputdir, 'model_config.json'), 'w') as f:
         json.dump(args.__dict__, f, indent=2)
     with open(args.lora_config) as fin:
         peft_params = json.load(fin)
     os.system("cp {} {}".format(args.lora_config, os.path.join(args.outputdir, 'lora_config.json')))
-    os.system("cp {} {}".format("train_weak_to_strong.py", os.path.join(args.outputdir, "train.py")))
-    os.system("cp {} {}".format("knowledgemodel.py", os.path.join(args.outputdir, "model.py")))
 
     ## Meta data
     with open("data/slotlist{}.json".format("_zero" if "_zero" in args.outputdir else "")) as fin:
@@ -88,12 +70,12 @@ def main(args):
         knowledgebase = json.load(fin)
 
     ## Initialise data
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True, use_fast=("pythia" in args.model_path))
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     LLMtype = "vicuna"
-    # if "llama-2" in args.model_path:
-    #     LLMtype = "llama2"
-    weak_tokenizer = AutoTokenizer.from_pretrained(args.weak_model_path, use_fast=("pythia" in args.weak_model_path), trust_remote_code=True)
-    stronger_tokenizer = AutoTokenizer.from_pretrained(args.strong_model_path, use_fast=("pythia" in args.weak_model_path), trust_remote_code=True)
+    if "llama-2" in args.model_path:
+        LLMtype = "llama2"
+    weak_tokenizer = AutoTokenizer.from_pretrained(args.weak_model_path)
+    stronger_tokenizer = AutoTokenizer.from_pretrained(args.strong_model_path)
 
     ## Initialise data
     weaktraindata = ActiveDataset(
@@ -102,7 +84,6 @@ def main(args):
         slotdict,
         slotstr,
         prompts,
-        LLM=LLMtype,
     )
     weakvaldata = ActiveDataset(
         args.val_data_path,
@@ -110,7 +91,6 @@ def main(args):
         slotdict,
         slotstr,
         prompts,
-        LLM=LLMtype,
     )
 
     weaktraindata.refill_labelset(step=min(len(weaktraindata.data), args.weak_train_samples))
@@ -121,13 +101,11 @@ def main(args):
     ##########################################
     # Train weak model first
     ##########################################
-    # Train weak model if task is "normal" or "deliberation"
     # Define model
     weakllm = AutoModelForCausalLM.from_pretrained(
         args.weak_model_path,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
-        device_map="auto",
-        # cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache", # Should be changed to your local cache dir
+        torch_dtype=torch.float16 if "gpt2" not in args.weak_model_path else torch.float32,
+        cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache", # Should be changed to your local cache dir
     )
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -137,26 +115,20 @@ def main(args):
         lora_dropout=peft_params["lora_dropout"],
         target_modules=peft_params["lora_module"],
     )
-    if "gpt2" not in args.weak_model_path and args.use_lora == "true":
+    if "gpt2" not in args.weak_model_path:
         weakllm = get_peft_model(weakllm, peft_config)
         weakllm.print_trainable_parameters()
     weakmodel = KnowledgeLLM(weakllm, weak_tokenizer)
-    # weakmodel = weakmodel.to(device)
+    weakmodel = weakmodel.to(device)
 
     if os.path.exists(args.pretrained_weak_model_path):
-        if os.path.exists(os.path.join(args.pretrained_weak_model_path, "pytorch_model.pt")):
-            state_dict = torch.load(os.path.join(args.pretrained_weak_model_path, "pytorch_model.pt"))
-            weakmodel.llm.load_state_dict(state_dict)
-        elif os.path.exists(os.path.join(args.pretrained_weak_model_path, "model.safetensors")):
-            llm = AutoModelForCausalLM.from_pretrained(
-                os.path.join(args.pretrained_weak_model_path),
-                torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
-                device_map="auto",
-            )
-            weakmodel.llm = llm
+        if "gpt2" not in args.weak_model_path:
+            # config = PeftConfig.from_pretrained(peftpath)
+            weakllm = PeftModel.from_pretrained(weakllm, args.pretrained_weak_model_path)
         else:
-            load_sharded_checkpoint(weakmodel.llm, os.path.join(args.pretrained_weak_model_path))
-    elif args.task != "human_annotation":
+            state_dict = torch.load(os.path.join(args.pretrained_weak_model_path, "pytorch_model.pt"))
+            weakllm.load_state_dict(state_dict)
+    else:
         ## Initialise criterion and optimiser
         criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
 
@@ -213,7 +185,6 @@ def main(args):
     ##########################################
     # Train stronger model next
     ##########################################
-    # Train stronger model if task is "deliberation"
     # Reset dataset
     weaktraindata.refill_labelset(step=min(len(weaktraindata.data), args.strong_train_samples))
     weakvaldata.refill_labelset(step=0)
@@ -222,15 +193,14 @@ def main(args):
     # Define model
     strongerllm = AutoModelForCausalLM.from_pretrained(
         args.strong_model_path,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
-        device_map="auto",
-        # cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache", # Should be changed to your local cache dir
+        torch_dtype=torch.float16 if "gpt2" not in args.strong_model_path else torch.float32,
+        cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache", # Should be changed to your local cache dir
     )
-    if "gpt2" not in args.strong_model_path and args.use_lora == "true":
+    if "gpt2" not in args.strong_model_path:
         strongerllm = get_peft_model(strongerllm, peft_config)
         strongerllm.print_trainable_parameters()
     strongermodel = KnowledgeLLM(strongerllm, stronger_tokenizer)
-    # strongermodel = strongermodel.to(device)
+    strongermodel = strongermodel.to(device)
 
     if os.path.exists(args.pretrained_strong_model_path):
         if "gpt2" not in args.pretrained_strong_model_path:
@@ -239,7 +209,7 @@ def main(args):
         else:
             state_dict = torch.load(os.path.join(args.pretrained_strong_model_path, "pytorch_model.pt"))
             strongerllm.load_state_dict(state_dict)
-    elif args.task == "deliberation":
+    else:
         ## Initialise criterion and optimiser
         criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
 
@@ -319,14 +289,12 @@ def main(args):
     )
     with torch.no_grad():
         traindata.refill_labelset(step=0)
-        if args.task == "deliberation":
+        if args.task != "human_annotation":
             traindata = get_next_labelset(args, weak_tokenizer, weakmodel, traindata, strongerset=(stronger_tokenizer, strongermodel))
-        elif args.task == "normal":
-            traindata = get_next_labelset(args, weak_tokenizer, weakmodel, traindata)
         traindata.tokenizer = tokenizer
         valdata.refill_labelset(step=0)
-        # if args.task != "human_annotation":
-        #     valdata = get_next_labelset(args, weak_tokenizer, weakmodel, valdata)
+        if args.task != "human_annotation":
+            valdata = get_next_labelset(args, weak_tokenizer, weakmodel, valdata)
         valdata.tokenizer = tokenizer
     weakmodel.cpu()
     strongermodel.cpu()
@@ -336,15 +304,13 @@ def main(args):
     # Initialise model
     llm = AutoModelForCausalLM.from_pretrained(
         args.model_path,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
-        device_map="auto",
-        # cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache", # Should be changed to your local cache dir
+        torch_dtype=torch.float16 if "gpt2" not in args.model_path else torch.float32,
+        cache_dir="/home/gs534/rds/rds-t2-cs164-KQ4S3rlDzm8/gs534/LLMknowledge/cache", # Should be changed to your local cache dir
     )
     if "gpt2" not in args.model_path and args.use_lora == "true":
         llm = get_peft_model(llm, peft_config)
         llm.print_trainable_parameters
-    # model = KnowledgeLLM(llm, tokenizer).to(device)
-    model = KnowledgeLLM(llm, tokenizer)
+    model = KnowledgeLLM(llm, tokenizer).to(device)
 
     # Initialise criterion
     criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
@@ -406,7 +372,7 @@ def save_checkpoint(model, tokenizer, outputdir, epoch):
     return checkpoint
 
 
-def get_cascaded_uncertainty(model, prompt_nbest, generate_hyps, tokenizer, lengths, device):
+def get_cascaded_uncertainty(model, prompt_nbest, generate_hyps, tokenizer, lengths):
     T = 0.1 # 0.001
     inputs = []
     labels = []
@@ -487,81 +453,40 @@ def get_next_labelset(args, tokenizer, model, traindata, strongerset=None):
     count = 0
     for batch in tqdm(active_loader):
         slurp_ids, sequences, nbest, label = batch
-        tokenized_seq = tokenizer(sequences[0], return_tensors="pt").input_ids.to(model.llm.device)
+        tokenized_seq = tokenizer(sequences[0], return_tensors="pt").input_ids.to(device)
         outputs = model.generate_beam(
             tokenized_seq,
             max_new_tokens=64,
             beamsize=5,
         )
-        # if strongerset is not None:
-        #     tokenized_seq_strong = stronger_tokenizer(sequences[0], return_tensors="pt").input_ids.to(model.llm.device)
-        #     stronger_outputs = strongermodel.generate_beam(
-        #         tokenized_seq_strong,
-        #         max_new_tokens=64,
-        #         beamsize=5,
-        #     )
-        #     lengths = torch.tensor([len(hyp.yseq) for hyp in stronger_outputs]).to(model.llm.device)
-        #     logplist = torch.stack([hyp.cumscore for hyp in stronger_outputs])
-        #     predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
-        #     firstpass_ids_dict[slurp_ids[0]] = [[stronger_tokenizer.decode(stronger_outputs[0].yseq).split("</s>")[0], predictive_entropy]]
-        #     uncertainties.append(predictive_entropy)
-        # else:
-        #     firstpass_ids_dict[slurp_ids[0]] = []
-        #     uncertainties.append(0)
-        firstpass_ids_dict[slurp_ids[0]] = []
-        lengths = torch.tensor([len(hyp.yseq) for hyp in outputs]).to(model.llm.device)
-        logplist = torch.stack([hyp.cumscore for hyp in outputs])
-        predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
-        uncertainties.append(predictive_entropy)
+        if strongerset is not None:
+            tokenized_seq_strong = stronger_tokenizer(sequences[0], return_tensors="pt").input_ids.to(device)
+            stronger_outputs = strongermodel.generate_beam(
+                tokenized_seq_strong,
+                max_new_tokens=64,
+                beamsize=5,
+            )
+            lengths = torch.tensor([len(hyp.yseq) for hyp in stronger_outputs]).to(device)
+            logplist = torch.stack([hyp.cumscore for hyp in stronger_outputs])
+            predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
+            firstpass_ids_dict[slurp_ids[0]] = [[stronger_tokenizer.decode(stronger_outputs[0].yseq).split("</s>")[0], predictive_entropy]]
+            uncertainties.append(predictive_entropy)
+        else:
+            firstpass_ids_dict[slurp_ids[0]] = []
+            uncertainties.append(0)
         for k, hyp in enumerate(outputs):
-            # firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], torch.Tensor([0])])
-            firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], predictive_entropy])
+            firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], 0])
     uncertainties = sorted(uncertainties, reverse=True)
     threshold = uncertainties[int(args.unc_threshold * len(uncertainties))]
     logging(f"Threshold for uncertainty: {threshold}")
     traindata.update_with_firstpass(
         firstpass_ids_dict,
         threshold,
-        # update_label=strongerset is not None,
-        update_label=True,
+        update_label=strongerset is not None,
         update_delib=args.task=="deliberation",
     )
     traindata.preprocess = True
     return traindata
-
-def get_next_labelset_multiweak(args, weak_tokenizer_list, weak_model_list, traindata):
-    traindata.preprocess = False
-    active_loader = DataLoader(traindata, batch_size=1, shuffle=False, collate_fn=collate_fn_active)
-    firstpass_ids_dict = {}
-    uncertainties = []
-    for batch in tqdm(active_loader):
-        slurp_ids, sequences, nbest, label = batch
-        outputs_list = []
-        for tokenizer, model in zip(weak_tokenizer_list, weak_model_list):
-            tokenized_seq = tokenizer(sequences[0], return_tensors="pt").input_ids.to(model.llm.device)
-            outputs = model.generate_beam(
-                tokenized_seq,
-                max_new_tokens=64,
-                beamsize=5,
-            )
-            lengths = torch.tensor([len(hyp.yseq) for hyp in outputs]).to(model.llm.device)
-            logplist = torch.stack([hyp.cumscore for hyp in outputs])
-            predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
-            outputs_list.append([tokenizer.decode(outputs[0].yseq).split("</s>")[0], predictive_entropy])
-            uncertainties.append(predictive_entropy)
-        firstpass_ids_dict[slurp_ids[0]] = outputs_list
-    uncertainties = sorted(uncertainties, reverse=True)
-    threshold = uncertainties[int(args.unc_threshold * len(uncertainties))]
-    logging(f"Threshold for uncertainty: {threshold}")
-    traindata.update_with_firstpass_multiweak(
-        labelset=firstpass_ids_dict,
-        threshold=threshold,
-        update_label=True
-    )
-    traindata.preprocess = True
-    traindata.multi_weak = True
-    return traindata
-        
 
 
 def calc_predictive_entropy(logp, temperature, lengths):
@@ -605,39 +530,6 @@ def train_one_epoch(args, epoch, model, train_dataloader, optimizer, lr_schedule
             PPL = math.exp(loss.item() * args.gradient_accumulation_steps)
             logging(f"Epoch {epoch} | Batch {i}/{trainsize} | PPL: {PPL} | time {elasped_time}")
     return model
-
-def train_one_epoch_multiweak(args, epoch, model, train_dataloader, optimizer, lr_scheduler, criterion, knowledge=None, tokenizer=None):
-    optimizer.zero_grad()
-    trainsize = len(train_dataloader)
-    start = time.time()
-    kgloss = 0
-    for i, batch in enumerate(train_dataloader):
-        inputs_list, total_label_list, nbest_propmpt, values_list = batch
-        loss = 0
-        with torch.cuda.amp.autocast():
-            for inputs, labels, values in zip(inputs_list, total_label_list, values_list):
-                output, labels = model(inputs, labels, knowledge=knowledge)
-                logits = output.logits
-                if isinstance(criterion, torch.nn.CrossEntropyLoss):
-                    loss += criterion(logits.view(-1, logits.size(-1)), labels.reshape(-1))
-                else:
-                    step_frac = (len(train_dataloader) * epoch + i) / len(train_dataloader) / args.num_train_epochs
-                    loss += criterion(logits, labels, step_frac, values)
-            loss = loss / args.gradient_accumulation_steps / len(inputs_list)
-        loss.backward()
-
-        if (i + 1) % args.gradient_accumulation_steps == 0:
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            lr_scheduler.step()
-            optimizer.zero_grad()
-        if (i + 1) % args.log_interval == 0:
-            elasped_time = time.time() - start
-            PPL = math.exp(loss.item() * args.gradient_accumulation_steps)
-            logging(f"Epoch {epoch} | Batch {i}/{trainsize} | PPL: {PPL} | time {elasped_time}")
-
-    return model
-
 
 
 def eval_one_epoch(args, model, valid_dataloader, criterion, knowledge=None, tokenizer=None):
@@ -835,15 +727,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--task",
         type=str,
-        default="normal",
-        choices=["normal", "deliberation", "human_annotation", "multi_weak"],
-        help="'normal' uses stronger model labels without deliberation. 'human_annotation' uses human labels. 'multi_weak' for multiple pretrained weak model.",
-    )
-    parser.add_argument(
-        "--weak_model_names",
-        type=str,
-        default="",
-        help="name of weak models. Saved in exp/weak/{weak_model_name}, only applied when task == multi_weak." 
+        default="slot",
+        help="Use ptr for finetuning",
     )
     parser.add_argument(
         "--lora_config",
@@ -875,6 +760,6 @@ if __name__ == "__main__":
         default=1,
         help="Size of ensemble",
     )
-    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--weak_model_names", type=str, default="")
     args = parser.parse_args()
     main(args)

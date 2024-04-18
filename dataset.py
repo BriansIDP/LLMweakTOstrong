@@ -50,6 +50,7 @@ class ActiveDataset(Dataset):
         self.LLM = LLM
         self.preprocess = True
         self.num_candidates = num_candidates
+        self.multi_weak = False
 
     def get_labelled_set(self, labelset):
         self.labelled = []
@@ -111,6 +112,14 @@ class ActiveDataset(Dataset):
                 for item in labelset[datapiece[0]][1:]:
                     datapiece[4].append(item[0])
 
+    def update_with_firstpass_multiweak(self, labelset, threshold, update_label=True):
+        for datapiece in self.main_data:
+            labels, values = zip(*(labelset[datapiece[0]]))
+            datapiece[2] = list(labels)
+            datapiece[3] = list(values)
+            # datapiece[2] = labelset[datapiece[0]][:, 0]
+            # datapiece[3] = labelset[datapiece[0]][:, 1]
+
     def process_json_data(self, data):
         sludata = {}
         for utterance in data["data"]:
@@ -130,7 +139,10 @@ class ActiveDataset(Dataset):
         return sludata
 
     def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
-        return self.preprocessing(self.main_data[idx])
+        if self.multi_weak:
+            return self.preprocessing_multiweak(self.main_data[idx])
+        else:
+            return self.preprocessing(self.main_data[idx])
 
     def preprocessing(self, sample):
         slurpid, content, label, values, keystrings, nbest = sample
@@ -160,6 +172,38 @@ class ActiveDataset(Dataset):
             return total_ids, total_label, nbest_prompt, values
         else:
             return slurpid, prompt, nbest_prompt, label
+        
+    def preprocessing_multiweak(self, sample):
+        slurpid, content, label_list, values, keystrings, nbest = sample
+        nbest = random.choice(nbest)  # randomly choose one audio output
+        if self.asrplace == "both" or self.asrplace == "main":
+            tmp_nbest = nbest + [[content]]
+            content = random.choice(tmp_nbest)[0]
+        nbest_prompt = []
+        system = self.prompts["system"]
+        taskdesc = self.prompts["task_description"].format(self.slotstr)
+        query = self.prompts["query"]
+        if keystrings != "" and isinstance(keystrings, list):
+            num_options = random.choice(range(1, self.num_candidates+1))
+            keystring = ", ".join(random.choices(keystrings, k=num_options))
+            query = self.prompts["delib_query"].format(keystring) + query
+        prompt = templates[self.LLM]["slot"][0].format(**locals())
+        for each_hyp in nbest:
+            content = each_hyp[0]
+            nbest_prompt.append([self.tokenizer(templates[self.LLM]["slot"][0].format(**locals())).input_ids, each_hyp[1]])
+        
+        prompt_inputs = self.tokenizer(prompt, return_tensors="pt")
+        total_ids_list = []
+        total_label_list = []
+        for label in label_list:
+            label_ids = self.tokenizer(label + "</s>", return_tensors="pt")["input_ids"]
+            label_ids = label_ids[0, 1:] if label_ids[0, 0] == 1 else label_ids[0]
+            total_ids = torch.cat([prompt_inputs["input_ids"][0], label_ids], dim=-1)
+            total_label = torch.cat([prompt_inputs["input_ids"][0] * 0 - 1, label_ids], dim=-1)
+            total_ids_list.append(total_ids)
+            total_label_list.append(total_label)
+        return total_ids_list, total_label_list, nbest_prompt, values
+
 
 
 def collate_fn_active(batch):
@@ -168,7 +212,7 @@ def collate_fn_active(batch):
 
 
 def collate_fn(batch):
-    total_ids, total_label, nbest, values  = zip(*batch)
+    total_ids, total_label, nbest, values = zip(*batch)
 
     total_ids = pad_sequence(total_ids, batch_first=True, padding_value=1).to(device)
     total_label = pad_sequence(total_label, batch_first=True, padding_value=-1).to(device)
@@ -178,3 +222,23 @@ def collate_fn(batch):
     if values[0] != {}:
         values = torch.stack(values)
     return inputs, total_label[:, 1:], nbest, values
+
+
+def collate_fn_multiweak(batch):
+    '''
+    Only works for batch_size=1 for now.
+    '''
+    total_ids_list, total_label_list, nbest, values_list = zip(*batch)
+    total_ids_list = total_ids_list[0]
+    total_label_list = total_label_list[0]
+    values_list = values_list[0]
+    inputs_list = []
+    for i in range(len(total_ids_list)):
+        # total_ids_list[i].unsqueeze(0)
+        # total_label_list[i].unsqueeze(0)
+        total_ids_list[i] = torch.unsqueeze(total_ids_list[i], dim=0)
+        total_label_list[i] = torch.unsqueeze(total_label_list[i], dim=0)
+        total_label_list[i] = total_label_list[i][:, 1:]
+        attention_mask = total_ids_list[i] != 0
+        inputs_list.append({"input_ids": total_ids_list[i][:, :-1], "attention_mask": attention_mask[:, :-1]})
+    return inputs_list, total_label_list, nbest, values_list
