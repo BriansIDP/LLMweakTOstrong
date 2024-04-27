@@ -200,5 +200,20 @@ class KnowledgeLLM(torch.nn.Module):
         sorted_hyps = sorted(finished_beam, key=lambda finished_beam: finished_beam.normscore, reverse=True)
         return sorted_hyps
 
-    def scoring(self, input_sequence):
-        pass
+    def scoring(self, prompt, label):
+        sequence = prompt + label
+        inputs = self.tokenizer(sequence, return_tensors="pt").to(self.llm.device)
+        with torch.no_grad():
+            logits = self.llm(**inputs).logits
+        length_x = self.tokenizer(prompt, return_tensors="pt")["input_ids"].shape[1]
+        # masked_logits = logits[0, length_x:, :]
+        # masked_logprob = torch.log_softmax(masked_logits, dim=-1)
+        # entropy = -(torch.exp(masked_logprob) * masked_logprob / len(masked_logprob)).sum()
+        logits = logits.to(torch.float32)
+        logprobs = torch.log_softmax(logits, dim=-1)
+        # token_logprobs = torch.gather(logprobs, dim=2, index=inputs["input_ids"].unsqueeze(-1)).squeeze(-1)
+        token_logprobs = logprobs[0, :, inputs["input_ids"].squeeze()]
+        token_logprobs = torch.diag(token_logprobs, diagonal=1)
+        token_logprobs = token_logprobs[length_x-1:]
+        score = token_logprobs.mean()
+        return score

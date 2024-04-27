@@ -7,8 +7,9 @@ asrfile="data/${asrname}_2000.json"
 nsamples=2000
 # expdir="exp/SLURP_w2s/SLURP_vicuna7bASR_vicuna7b_${nsamples}_samples_weak1000sample"
 # expdir="exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsamples}_samples_weak500to2000"
-expdir="exp/weak/opt-1.3b/lr1e-5_bs4*2_epoch15"
-# expdir="exp/SLURP/SLURP_vicuna13bv1.5_${nsamples}_samples_zeroshot_baseline2"
+# expdir="exp/w2s/gpt2-large_to_llama2/lr1e-5_bs2*2_epoch4_edl_nokl"
+expdir="exp/weak/joint_decode"
+# expdir="exp/SLURP/SLURP_vicuna1\3bv1.5_${nsamples}_samples_zeroshot_baseline2"
 logfile="$expdir/eval_log.txt"
 result_file="output_${asrname}_top1upperbound_iter1.json"
 
@@ -29,7 +30,8 @@ else
         --maxKBsize 0 \
         --calibration_t 1 \
         --tag upperbound_iter1 \
-        --iteration 1
+        --iteration 1 \
+        > ${expdir}/eval.log
 fi
     # --unc_threshold 0.06 \
     # --cascaded \

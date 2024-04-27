@@ -18,24 +18,26 @@ valfile=data/validlabel_nbest.json
 
 
 # weakmodel=ckpt/vicuna-7b-v1.5
-# weakmodel=/mnt/nvme_share/cuizy/models/gpt2
-weakmodel=/mnt/nvme_share/cuizy/models/pythia-1.4b
+weakmodel=/mnt/nvme_share/cuizy/models/gpt2-large
+# weakmodel=/mnt/nvme_share/cuizy/models/pythia-1.4b
 # weakmodel=/mnt/nvme_share/cuizy/models/opt-1.3b
+# weakmodel=/mnt/nvme_share/cuizy/models/bloom-560m
 modelpath=/mnt/nvme_share/cuizy/models/llama-2-7b-hf
 # modelpath=/mnt/nvme_share/cuizy/models/gpt2-large
 # modelpath=/mnt/nvme_share/cuizy/models/opt-1.3b
 # modelpath=/mnt/nvme_share/cuizy/models/pythia-1.4b
+# modelpath=/mnt/nvme_share/cuizy/models/bloom-560m
 
 
 # pretrained_weak_model_path=exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsample}_samples_weak${weaksample}to${strongsample}/checkpoint.best_weak
 # pretrained_strong_model_path=exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsample}_samples_weak${weaksample}to${strongsample}/checkpoint.best_stronger
-# pretrained_weak_model_path="exp/weak/gpt2-large/lr5e-5_bs4*2_epoch15/checkpoint.best"
-# pretrained_weak_model_path="exp/weak/gpt2/lr2e-5_bs3*2_epoch15_fp32/checkpoint.best"
-pretrained_weak_model_path="exp/weak/pythia-1.4b/checkpoint.best"
+pretrained_weak_model_path="exp/weak/gpt2-large/checkpoint.best"
+# pretrained_weak_model_path="exp/weak/opt-1.3b/checkpoint.best"
+# pretrained_weak_model_path="exp/weak/pythia-1.4b/checkpoint.best"
 pretrained_strong_model_path=exp/debug/checkpoint.best_stronger
 
 
-expdir="exp/w2s/pythia_to_llama2/lr1e-5_bs2*2_epoch4"
+expdir="exp/w2s/gpt2-large_to_llama2/lr1e-5_bs1*2_epoch2_edl_test_clamp2"
 mkdir -p $expdir
 
 CUDA_VISIBLE_DEVICES=1 \
@@ -46,11 +48,11 @@ python train_weak_to_strong_clear.py \
     --pretrained_weak_model_path $pretrained_weak_model_path \
     --weak_train_samples $weaksample \
     --strong_train_samples $strongsample \
-    --batch_size 2 \
+    --batch_size 1 \
     --eval_batch_size 8 \
     --learning_rate 1e-5 \
     --gradient_accumulation_steps 2 \
-    --num_train_epochs 4 \
+    --num_train_epochs 2 \
     --outputdir $expdir \
     --logfile $expdir/log.txt \
     --log_interval 50 \
@@ -63,9 +65,11 @@ python train_weak_to_strong_clear.py \
     --maxKBsize 0 \
     --lora_config data/lora_config.json \
     --task normal \
+    --criterion edl \
     --weak_model_names gpt2-large,opt-1.3b,pythia-1.4b \
     --asrplace none \
-    --num_candidates 1 
+    --num_candidates 1 \
+    > ${expdir}/train_log.log
     
     # --pretrained_weak_model_path $pretrained_weak_model_path \
     # --pretrained_strong_model_path $pretrained_strong_model_path \

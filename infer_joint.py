@@ -15,6 +15,7 @@ import time
 import json
 import argparse
 import math
+import string
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
@@ -118,22 +119,22 @@ def loadknowledge(knowledge_lki, orig_lki):
     return json.dumps(knowledgedict)
 
 
-def merge_outputs(outputs, slotdict):
+def merge_outputs(output, slotdict):
     new_output = {}
-    for output in outputs:
-        if "</s>" in output:
-            output = output.split("</s>")[0]
-        try:
-            outdict = json.loads(output)
-            for key, value in outdict.items():
-                value = " & ".join(value) if isinstance(value, list) else value
-                if value not in [i for v in new_output.values() for i in v]:
-                    if key in new_output and value not in new_output[key]:
-                        new_output[key].append(value)
-                    elif key not in new_output and key in slotdict:
-                        new_output[key] = [value]
-        except:
-            continue
+    # for output in outputs:
+    if "</s>" in output:
+        output = output.split("</s>")[0]
+    try:
+        outdict = json.loads(output)
+        for key, value in outdict.items():
+            value = " & ".join(value) if isinstance(value, list) else value
+            if value not in [i for v in new_output.values() for i in v]:
+                if key in new_output and value not in new_output[key]:
+                    new_output[key].append(value)
+                elif key not in new_output and key in slotdict:
+                    new_output[key] = [value]
+    except:
+        return "{}"
     for key, value in new_output.items():
         try:
             new_output[key] = " & ".join(value)
@@ -328,49 +329,49 @@ def main(args):
         knowledge_index = get_knowledge_index(args.ontology)
     linearise_knowledge = "LKI" in train_args["tag"] or "LKI" in args.tag
 
-    ## Initialise tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(train_args["model_path"], use_fast=("pythia" in train_args["model_path"] or "bloom" in train_args["model_path"]))
+    # ## Initialise tokenizer
+    # tokenizer = AutoTokenizer.from_pretrained(train_args["model_path"], use_fast=("pythia" in train_args["model_path"] or "bloom" in train_args["model_path"]))
 
     # Stopping criterion
-    stopping_criteria = StoppingCriteriaList([StoppingCriteriaSub(stops='</s>', tokenizer=tokenizer)])
+    # stopping_criteria = StoppingCriteriaList([StoppingCriteriaSub(stops='</s>', tokenizer=tokenizer)])
 
     # determine model type
     LLMtype = "vicuna"
     # if "llama-2" in train_args["model_path"]:
     #     LLMtype = "llama2"
 
-    llm = AutoModelForCausalLM.from_pretrained(
-        train_args["model_path"],
-        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
-        # torch_dtype=torch.float32,
-        device_map="auto",
-    )
-    # if "gpt2" not in train_args["model_path"]:
-    #     # config = PeftConfig.from_pretrained(peftpath)
-    #     llm = PeftModel.from_pretrained(llm, os.path.join(args.model_path, args.main_ckpt), adapter_name="ada_1")
-    # else:
-    #     state_dict = torch.load(os.path.join(args.model_path, args.main_ckpt, "pytorch_model.pt"))
-    #     llm.load_state_dict(state_dict)
-
-    if train_args["use_lora"] == 'true':
-        llm = PeftModel.from_pretrained(llm, os.path.join(args.model_path, args.main_ckpt), adapter_name="ada_1")
-    elif os.path.exists(os.path.join(args.model_path, args.main_ckpt, "pytorch_model.pt")):
-        state_dict = torch.load(os.path.join(args.model_path, args.main_ckpt, "pytorch_model.pt"))
-        llm.load_state_dict(state_dict)
-    elif os.path.exists(os.path.join(args.model_path, args.main_ckpt, "model.safetensors")):
-        # state_dict = load_state_dict(os.path.join(args.model_path, args.main_ckpt, "model.safetensors"))
-        # llm.load_state_dict(state_dict)
-        llm = AutoModelForCausalLM.from_pretrained(
-            os.path.join(args.model_path, args.main_ckpt),
-            torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
-            # torch_dtype=torch.float32,
-            device_map="auto",
-        )
-    else:
-        load_sharded_checkpoint(llm, os.path.join(args.model_path, args.main_ckpt))
-
-    model = KnowledgeLLM(llm, tokenizer, train_args["use_lora"])
-    model.eval()
+    weak_model_names = ["gpt2-large", "opt-1.3b", "pythia-1.4b"]
+    model_list = []
+    tokenizer_list = []
+    for weak_model_name in weak_model_names:
+        pretrained_weak_model_path = os.path.join("exp/weak", weak_model_name, 'checkpoint.best')
+        weak_model_path = os.path.join("/mnt/nvme_share/cuizy/models", weak_model_name)
+        weak_tokenizer = AutoTokenizer.from_pretrained(weak_model_path, use_fast=("pythia" in weak_model_path), trust_remote_code=True)
+        if os.path.exists(pretrained_weak_model_path):
+            if os.path.exists(os.path.join(pretrained_weak_model_path, "model.safetensors")):
+                weakllm = AutoModelForCausalLM.from_pretrained(
+                    os.path.join(pretrained_weak_model_path),
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
+                    device_map="auto",
+                )
+            else:
+                weakllm = AutoModelForCausalLM.from_pretrained(
+                    weak_model_path,
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
+                    device_map="auto",
+                )
+                if os.path.exists(os.path.join(pretrained_weak_model_path, "pytorch_model.pt")):
+                    state_dict = torch.load(os.path.join(pretrained_weak_model_path, "pytorch_model.pt"))
+                    weakllm.load_state_dict(state_dict)
+                else:
+                    load_sharded_checkpoint(weakllm, os.path.join(pretrained_weak_model_path))
+            weakmodel = KnowledgeLLM(weakllm, weak_tokenizer)
+            weakmodel.eval()
+        else:
+            print("Error: Please input correct pretrained weak model path.")
+            return 0
+        model_list.append(weakmodel)
+        tokenizer_list.append(weak_tokenizer)
 
     # Read test file
     with open(args.recogfile) as fin:
@@ -410,34 +411,52 @@ def main(args):
 
             # Forward first pass
             prompt = templates[LLMtype]["slot"][1].format(**locals())
-            inputs = tokenizer(prompt, return_tensors="pt").to(model.llm.device)
-            generate_hyps = model.generate_beam(
-                input_ids=inputs.input_ids,
-                max_new_tokens=60,
-                stopping_criteria=stopping_criteria,
-                beamsize=3,
-                n_adapters=1,
-            )
-            # output = [tokenizer.decode(hyp.yseq).split("</s>")[0] for hyp in generate_hyps]
-            output = [tokenizer.decode(hyp.yseq) for hyp in generate_hyps]
+            outputs_list = []
+            for tokenizer, model in zip(tokenizer_list, model_list):
+                tokenized_seq = tokenizer(prompt, return_tensors="pt").input_ids.to(model.llm.device)
+                outputs = model.generate_beam(
+                    input_ids=tokenized_seq,
+                    max_new_tokens=60,
+                    beamsize=5,
+                    n_adapters=1
+                )
+                lengths = torch.tensor([len(hyp.yseq) for hyp in outputs]).to(model.llm.device)
+                logplist = torch.stack([hyp.cumscore for hyp in outputs])
+                predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
+                for k, hyp in enumerate(outputs):
+                    output_txt = tokenizer.decode(hyp.yseq, skip_special_tokens=True).strip().split("</s>")[0]
+                    empty = True
+                    for char in output_txt:
+                        if char not in string.punctuation:
+                            empty = False
+                    if empty:
+                        output_txt = "{}"
+                    outputs_list.append([output_txt, predictive_entropy])
+            
+            filtered_list = []
+            seen = set()
+            for result in outputs_list:
+                if result[0] not in seen:
+                    filtered_list.append(result)
+                    seen.add(result[0])
 
-            # Uncertainty
-            lengths = torch.tensor([len(hyp.yseq) for hyp in generate_hyps]).to(device)
-            logplist = torch.stack([hyp.cumscore for hyp in generate_hyps])
-            ensemble_entropy = [torch.stack(hyp.entropy).tolist() for hyp in generate_hyps]
-            # ensemble_entropy = [hyp.scores for hyp in generate_hyps]
-            newbest_ind = torch.sort(logplist / lengths, descending=True)[1][0]
-            predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, args.calibration_t, lengths)
-            # Get outputs
-            outputs = model.tokenizer.batch_decode([generate_hyps[newbest_ind].yseq], skip_special_tokens=True, clean_up_tokenization_spaces=False)
-            output = merge_outputs(outputs, slotdict)
-            print(predictive_entropy, unnorm_entropy, output)
+            for i, result in enumerate(filtered_list):
+                scores = torch.stack([model.scoring(prompt, result[0]) for model in model_list])
+                filtered_list[i].append(scores)
+                weight = torch.Tensor([0.5, 0.2, 0.3]).to(scores.device)
+                scores = scores.matmul(weight)
+                filtered_list[i].append(scores)
+            best_output = max(filtered_list, key=lambda x: x[3].item())
+            
+            output = merge_outputs(best_output[0], slotdict)
+            # print(predictive_entropy, unnorm_entropy, output)
+            print(best_output)
             entity_f1, slu_f1 = calc_metrics(output, uttdict["label"])
 
             outputdict[slurpid] = {
                 "output": output,
-                "predictive": predictive_entropy.item(),
-                "unnormalised": unnorm_entropy.item(),
+                "predictive": best_output[1].item(),
+                # "unnormalised": unnorm_entropy.item(),
                 "entity_f1": entity_f1,
                 "slu_f1": slu_f1,
                 "beamsearch_entropy": 0,
@@ -450,7 +469,6 @@ def main(args):
     with open(os.path.join(args.model_path, args.result_file), "w") as fout:
         json.dump(outputdict, fout, indent=4)
             
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LLM finetuning")

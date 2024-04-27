@@ -86,7 +86,6 @@ class logconf_loss_fn(LossFnBase):
         pred_entropy = pred_entropy.sum(-1) / (~lossmask).sum(dim=-1)
         threshold_mask = pred_entropy > values
         # Threshold_mask: true or false. uttrance level
-        # lossmask *= threshold_mask.unsqueeze(1)
         lossmask = lossmask | ~threshold_mask.unsqueeze(1)
         maxonehot = torch.nn.functional.one_hot(preds.max(dim=-1)[1], num_classes=logits.size(-1)).float()
         # target = labels * (1 - coef) + maxonehot.detach() * coef
@@ -99,6 +98,7 @@ class logconf_loss_fn(LossFnBase):
         # loss = loss.sum() / (~lossmask).sum()
         # return loss
         if lossmask.all():
+        # if all loss is masked, return 0 as loss
             return loss.sum()
         else:
             return loss.sum() / (~lossmask).sum()
@@ -109,7 +109,7 @@ class logconf_step_loss_fn(LossFnBase):
     def __init__(
         self,
         aux_coef: float = 0.5,
-        warmup_frac: float = 0.05,  # in terms of fraction of total training steps
+        warmup_frac: float = 0.1,  # in terms of fraction of total training steps
     ):
         self.aux_coef = aux_coef
         self.warmup_frac = warmup_frac
@@ -151,7 +151,8 @@ class logconf_step_loss_fn(LossFnBase):
         return loss
     
 
-class logconf_stepmask_loss_fn(LossFnBase):
+class logconf_confer_loss_fn(LossFnBase):
+
     def __init__(
         self,
         aux_coef: float = 0.5,
@@ -159,6 +160,130 @@ class logconf_stepmask_loss_fn(LossFnBase):
     ):
         self.aux_coef = aux_coef
         self.warmup_frac = warmup_frac
+
+    def __call__(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        step_frac: float,
+        values: torch.Tensor,
+    ) -> torch.Tensor:
+        
+        logits = logits.float()
+        # Size: [batch_size, seq_len, tokenizer_size]
+        lossmask = (labels == -1)
+        # [bs, sl]
+        labels = labels.masked_fill(lossmask, 0)
+        labels = torch.nn.functional.one_hot(labels, num_classes=logits.size(-1)).float()
+        # [bs, sl, ts] one-hot
+        coef = 1.0 if step_frac > self.warmup_frac else step_frac
+        coef = coef * self.aux_coef
+        preds = torch.log_softmax(logits, dim=-1)
+        # pred_entropy = -preds * (- torch.exp(preds) * preds).sum(dim=-1)
+        pred_entropy = (- labels * preds).sum(dim=-1) * (~lossmask)
+        pred_entropy = pred_entropy.sum(-1) / (~lossmask).sum(dim=-1)
+        threshold_mask = pred_entropy > values
+        loss_mask_weak = lossmask | ~threshold_mask.unsqueeze(1)
+        loss_mask_strong = lossmask | threshold_mask.unsqueeze(1)
+
+        strong_preds = torch.argmax(logits, dim=-1).detach()
+        strong_preds[lossmask] = 0
+        strong_preds = torch.nn.functional.one_hot(strong_preds, num_classes=logits.size(-1)).float()
+
+        loss_weak = torch.nn.functional.cross_entropy(
+            logits.view(-1, logits.size(-1)),
+            labels.view(-1, logits.size(-1)),
+            reduction="none",
+        )
+        loss_weak = loss_weak.masked_fill(loss_mask_weak.view(-1), 0)
+        loss_strong = torch.nn.functional.cross_entropy(
+            logits.view(-1, logits.size(-1)),
+            strong_preds.view(-1, logits.size(-1)),
+            reduction="none",
+        )
+        loss_strong = loss_strong.masked_fill(loss_mask_strong.view(-1), 0)
+
+        loss = loss_weak + loss_strong * coef
+        # loss = loss_weak + loss_strong
+        loss = loss.sum() / (~lossmask).sum()
+        return loss
+
+
+def dir_loss(outputs, targets, strp_frac=0, epsilon=1e-6, reduction="mean", alpha=0.5):
+    '''
+    outputs: output logits in shape of Tensor([batch_size*seq_len, tokenizer_size]), dtype=float32
+    targets: one-hot tensor in shape of Tensor([batch_size*seq_len, tokenizer_size]), dtype=float32
+    '''
+    batch_size = targets.shape[0]
+    n_class = targets.shape[1]
+
+    alphas = torch.exp(outputs) + epsilon
+    targets = torch.relu(targets - epsilon * (n_class+1)) + epsilon
+
+    dir_logprob = (torch.xlogy(alphas - 1.0, targets).sum(-1)
+            + torch.lgamma(alphas.sum(-1))
+            - torch.lgamma(alphas).sum(-1))
+    
+    kl_div = torch.nn.functional.kl_div(
+        input=torch.log_softmax(outputs, dim=-1),
+        target=targets,
+        reduction="none"
+    ).sum(-1)
+
+    dir_logprob = torch.clamp(dir_logprob, min=-1e8, max=1e8)
+
+    loss = -dir_logprob * 1e-8 + kl_div * 1e-2
+    # loss = kl_div
+
+    return loss
+
+class DirLossFn(LossFnBase):
+    def __init__(
+        self,
+        alpha: float = 0.5,
+    ):
+        self.alpha = alpha
+
+    def __call__(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        step_frac: float,
+        values: torch.Tensor,
+    ) -> torch.Tensor:
+        logits = logits.float()
+        lossmask = (labels == -1)
+        # [bs, sl]
+        labels = labels.masked_fill(lossmask, 0)
+        labels = torch.nn.functional.one_hot(labels, num_classes=logits.size(-1)).float()
+        # [bs, sl, ts]
+        loss = dir_loss(
+            logits.view(-1, logits.size(-1)),
+            labels.view(-1, logits.size(-1)),
+            reduction="none",
+        )
+        loss = loss.masked_fill(lossmask.view(-1), 0)
+        return loss.sum() / (~lossmask).sum()
+
+
+class Dir_logconf_loss_fn(LossFnBase):
+    """
+    This class defines a custom loss function for log confidence.
+
+    Attributes:
+    aux_coef: A float indicating the auxiliary coefficient.
+    warmup_frac: A float indicating the fraction of total training steps for warmup.
+    """
+
+    def __init__(
+        self,
+        aux_coef: float = 0.5,
+        warmup_frac: float = 0.1,  # in terms of fraction of total training steps
+        alpha: float = 0.5,
+    ):
+        self.aux_coef = aux_coef
+        self.warmup_frac = warmup_frac
+        self.alpha = alpha
 
     def __call__(
         self,
@@ -182,19 +307,274 @@ class logconf_stepmask_loss_fn(LossFnBase):
         pred_entropy = pred_entropy.sum(-1) / (~lossmask).sum(dim=-1)
         threshold_mask = pred_entropy > values
         # Threshold_mask: true or false. uttrance level
-        # lossmask *= threshold_mask.unsqueeze(1)
         lossmask = lossmask | ~threshold_mask.unsqueeze(1)
-        maxonehot = torch.nn.functional.one_hot(preds.max(dim=-1)[1], num_classes=logits.size(-1)).float()
         # target = labels * (1 - coef) + maxonehot.detach() * coef
-        loss = torch.nn.functional.cross_entropy(
+        loss = dir_loss(
             logits.view(-1, logits.size(-1)),
             labels.view(-1, logits.size(-1)),
             reduction="none",
+            alpha=self.alpha,
         )
         loss = loss.masked_fill(lossmask.view(-1), 0)
-        # loss = loss.sum() / (~lossmask).sum()
-        # return loss
         if lossmask.all():
-            return loss.sum() / lossmask.sum()
+        # if all loss is masked, return 0 as loss
+            return loss.sum()
         else:
             return loss.sum() / (~lossmask).sum()
+        
+
+def kl_divergence(alpha, num_classes, device=None):
+    ones = torch.ones([1, num_classes], dtype=torch.float32, device=device)
+    sum_alpha = torch.sum(alpha, dim=1, keepdim=True)
+    first_term = (
+        torch.lgamma(sum_alpha)
+        - torch.lgamma(alpha).sum(dim=1, keepdim=True)
+        + torch.lgamma(ones).sum(dim=1, keepdim=True)
+        - torch.lgamma(ones.sum(dim=1, keepdim=True))
+    )
+    second_term = (
+        (alpha - ones)
+        .mul(torch.digamma(alpha) - torch.digamma(sum_alpha))
+        .sum(dim=1, keepdim=True)
+    )
+    kl = first_term + second_term
+    return kl
+
+
+def edl_loss(func, y, alpha, num_classes, step_frac, device=None):
+    y = y.to(device)
+    alpha = alpha.to(device)
+    S = torch.sum(alpha, dim=1, keepdim=True)
+
+    A = torch.sum(y * (func(S) - func(alpha)), dim=1, keepdim=True)
+
+    annealing_coef = torch.min(
+        torch.tensor(1.0, dtype=torch.float32),
+        torch.tensor(step_frac, dtype=torch.float32),
+    )
+
+    kl_alpha = (alpha - 1) * (1 - y) + 1
+    # kl_alpha = alpha * (1 - y) + 1
+    # kl_alpha = alpha * (1 - y)
+    kl_div = annealing_coef * kl_divergence(kl_alpha, num_classes, device) * 1e-4
+
+    kl_div = torch.clamp(kl_div, min=-1, max=1)
+    
+    # return A + kl_div
+    return A, kl_div
+    # return A
+
+
+def edl_log_loss(output, target, step_frac, num_classes=2):
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = output.device
+    # evidence = F.relu(output)
+    # evidence = torch.nn.functional.softmax(output, dim=1)
+    evidence = torch.exp(output)
+    # evidence = torch.nn.functional.softplus(output)
+    alpha = evidence + 1
+    # alpha = evidence
+    # loss = torch.mean(
+    #     edl_loss(
+    #         torch.log, target, alpha, num_classes, step_frac, device
+    #     )
+    # )
+    # loss = edl_loss(torch.log, target, alpha, num_classes, step_frac, device)
+    # return loss.squeeze()
+    xent, kl_div = edl_loss(torch.log, target, alpha, num_classes, step_frac, device)
+    return xent.squeeze(), kl_div.squeeze()
+
+
+class edl_log_loss_fn(LossFnBase):
+    def __call__(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        step_frac: float,
+        values: torch.Tensor,
+    ) -> torch.Tensor:
+        logits = logits.float()
+        lossmask = (labels == -1)
+        # [bs, sl]
+        labels = labels.masked_fill(lossmask, 0)
+        labels = torch.nn.functional.one_hot(labels, num_classes=logits.size(-1)).float()
+        num_classes = logits.size(-1)
+
+        # loss = edl_log_loss(logits, labels, step_frac)
+        # loss = edl_log_loss(
+        #     output=logits.view(-1, num_classes),
+        #     target=labels.view(-1, num_classes),
+        #     step_frac=step_frac,
+        #     num_classes=num_classes,
+        # )
+
+        # loss = loss.masked_fill(lossmask.view(-1), 0)
+        # return loss.sum() / (~lossmask).sum()
+
+        xent, kl_div = edl_log_loss(
+            output=logits.view(-1, num_classes),
+            target=labels.view(-1, num_classes),
+            step_frac=step_frac,
+            num_classes=num_classes,
+        )
+        xent = xent.masked_fill(lossmask.view(-1), 0)
+        kl_div = kl_div.masked_fill(lossmask.view(-1), 0)
+        xent = xent.sum() / (~lossmask).sum()
+        kl_div = kl_div.sum() / (~lossmask).sum()
+        return xent, kl_div
+
+        
+
+
+class edl_logconf_loss_fn(LossFnBase):
+    def __init__(
+        self,
+        aux_coef: float = 0.5,
+        warmup_frac: float = 0.1,  # in terms of fraction of total training steps
+    ):
+        self.aux_coef = aux_coef
+        self.warmup_frac = warmup_frac
+
+    def __call__(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        step_frac: float,
+        values: torch.Tensor,
+    ) -> torch.Tensor:
+        logits = logits.float()
+        # Size: [batch_size, seq_len, tokenizer_size]
+        lossmask = (labels == -1)
+        # [bs, sl]
+        labels = labels.masked_fill(lossmask, 0)
+        labels = torch.nn.functional.one_hot(labels, num_classes=logits.size(-1)).float()
+        # [bs, sl, ts]
+        num_classes = logits.size(-1)
+        coef = 1.0 if step_frac > self.warmup_frac else step_frac
+        coef = coef * self.aux_coef
+        preds = torch.log_softmax(logits, dim=-1)
+        # pred_entropy = -preds * (- torch.exp(preds) * preds).sum(dim=-1)
+        pred_entropy = (- labels * preds).sum(dim=-1) * (~lossmask)
+        pred_entropy = pred_entropy.sum(-1) / (~lossmask).sum(dim=-1)
+        threshold_mask = pred_entropy > values
+        # Threshold_mask: true or false. uttrance level
+        lossmask = lossmask | ~threshold_mask.unsqueeze(1)
+        loss = edl_log_loss(
+            output=logits.view(-1, num_classes),
+            target=labels.view(-1, num_classes),
+            step_frac=step_frac,
+            num_classes=num_classes,
+        )
+
+        loss = loss.masked_fill(lossmask.view(-1), 0)
+        if lossmask.all():
+            return loss.sum()
+        else:
+            return loss.sum() / (~lossmask).sum()
+        
+
+class edl_logconf_step_loss_fn(LossFnBase):
+
+    def __init__(
+        self,
+        aux_coef: float = 0.5,
+        warmup_frac: float = 0.1,  # in terms of fraction of total training steps
+    ):
+        self.aux_coef = aux_coef
+        self.warmup_frac = warmup_frac
+
+    def __call__(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        step_frac: float,
+        values: torch.Tensor,
+    ) -> torch.Tensor:
+        
+        logits = logits.float()
+        # Size: [batch_size, seq_len, tokenizer_size]
+        lossmask = (labels == -1)
+        # [bs, sl]
+        labels = labels.masked_fill(lossmask, 0)
+        labels = torch.nn.functional.one_hot(labels, num_classes=logits.size(-1)).float()
+        # [bs, sl, ts]
+        coef = 1.0 if step_frac > self.warmup_frac else step_frac
+        coef = coef * self.aux_coef
+
+        strong_preds = torch.argmax(logits, dim=-1)
+        strong_preds[lossmask] = 0
+        strong_preds = torch.nn.functional.one_hot(strong_preds, num_classes=logits.size(-1)).float()
+        # print("strong_preds", strong_preds.shape)
+        targets = labels * (1 - coef) + strong_preds.detach() * coef
+        num_classes = logits.size(-1)
+        loss = edl_log_loss(
+            output=logits.view(-1, num_classes),
+            target=targets.view(-1, num_classes),
+            step_frac=step_frac,
+            num_classes=num_classes,
+        )
+        loss = loss.masked_fill(lossmask.view(-1), 0)
+        loss = loss.sum() / (~lossmask).sum()
+
+        return loss
+
+
+class edl_logconf_confer_loss_fn(LossFnBase):
+
+    def __init__(
+        self,
+        aux_coef: float = 0.5,
+        warmup_frac: float = 0.1,  # in terms of fraction of total training steps
+    ):
+        self.aux_coef = aux_coef
+        self.warmup_frac = warmup_frac
+
+    def __call__(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        step_frac: float,
+        values: torch.Tensor,
+    ) -> torch.Tensor:
+        
+        logits = logits.float()
+        # Size: [batch_size, seq_len, tokenizer_size]
+        lossmask = (labels == -1)
+        # [bs, sl]
+        labels = labels.masked_fill(lossmask, 0)
+        labels = torch.nn.functional.one_hot(labels, num_classes=logits.size(-1)).float()
+        # [bs, sl, ts] one-hot
+        coef = 1.0 if step_frac > self.warmup_frac else step_frac
+        coef = coef * self.aux_coef
+        preds = torch.log_softmax(logits, dim=-1)
+        # pred_entropy = -preds * (- torch.exp(preds) * preds).sum(dim=-1)
+        pred_entropy = (- labels * preds).sum(dim=-1) * (~lossmask)
+        pred_entropy = pred_entropy.sum(-1) / (~lossmask).sum(dim=-1)
+        threshold_mask = pred_entropy > values
+        loss_mask_weak = lossmask | ~threshold_mask.unsqueeze(1)
+        loss_mask_strong = lossmask | threshold_mask.unsqueeze(1)
+
+        strong_preds = torch.argmax(logits, dim=-1).detach()
+        strong_preds[lossmask] = 0
+        strong_preds = torch.nn.functional.one_hot(strong_preds, num_classes=logits.size(-1)).float()
+        num_classes = logits.size(-1)
+
+        loss_weak = edl_log_loss(
+            output=logits.view(-1, num_classes),
+            target=labels.view(-1, num_classes),
+            step_frac=step_frac,
+            num_classes=num_classes,
+        )
+        loss_weak = loss_weak.masked_fill(loss_mask_weak.view(-1), 0)
+        loss_strong = edl_log_loss(
+            output=logits.view(-1, num_classes),
+            target=strong_preds.view(-1, num_classes),
+            step_frac=step_frac,
+            num_classes=num_classes,
+        )
+        loss_strong = loss_strong.masked_fill(loss_mask_strong.view(-1), 0)
+
+        loss = loss_weak + loss_strong * coef
+        # loss = loss_weak + loss_strong
+        loss = loss.sum() / (~lossmask).sum()
+        return loss

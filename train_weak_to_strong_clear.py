@@ -16,6 +16,7 @@ import math
 import time
 import copy
 import json
+import string
 from collections import OrderedDict
 
 import torch
@@ -35,7 +36,8 @@ from knowledgemodel import KnowledgeLLM
 from scoring.evaluation.metrics import ErrorMetric
 from scoring.evaluation.util import format_results, load_predictions, load_gold_data
 from scoring.evaluation.normalizers.english import EnglishTextNormalizer
-from loss import logconf_loss_fn, logconf_step_loss_fn
+from loss import (logconf_loss_fn, logconf_step_loss_fn, logconf_confer_loss_fn, DirLossFn, 
+                  edl_log_loss_fn, edl_logconf_loss_fn, edl_logconf_step_loss_fn, edl_logconf_confer_loss_fn)
 
 normaliser = EnglishTextNormalizer()
 
@@ -51,6 +53,14 @@ def logging(s, logging_=True, log_=True):
     if log_:
         with open(args.logfile, 'a+') as f_log:
             f_log.write(s + '\n')
+
+
+def check_nan(tensor, name, data):
+    if torch.isnan(tensor).any():
+        print(f"NaN detected in {name}")
+        torch.save(data, os.path.join(args.outputdir, "nan_data.pt"))
+        raise ValueError(f"NaN detected in {name}")
+
 
 def get_grouped_params(model):
     no_decay = ["bias", "LayerNorm.weight"]
@@ -77,7 +87,7 @@ def main(args):
     with open(args.lora_config) as fin:
         peft_params = json.load(fin)
     os.system("cp {} {}".format(args.lora_config, os.path.join(args.outputdir, 'lora_config.json')))
-    os.system("cp {} {}".format("train_weak_to_strong.py", os.path.join(args.outputdir, "train.py")))
+    os.system("cp {} {}".format("train_weak_to_strong_clear.py", os.path.join(args.outputdir, "train.py")))
     os.system("cp {} {}".format("knowledgemodel.py", os.path.join(args.outputdir, "model.py")))
     os.system("cp {} {}".format("loss.py", os.path.join(args.outputdir, "loss.py")))
 
@@ -122,10 +132,12 @@ def main(args):
             print("Error: Please input correct pretrained weak model path.")
             return 0
         
-    if args.task == "human_annotation":
-        weak_tokenizer = AutoTokenizer.from_pretrained(args.weak_model_path, use_fast=("pythia" in args.weak_model_path), trust_remote_code=True)
+    elif args.task == "human_annotation":
+        weak_tokenizer = AutoTokenizer.from_pretrained(args.weak_model_path, 
+                                                       use_fast=("pythia" in args.weak_model_path or "bloom" in args.weak_model_path), 
+                                                       trust_remote_code=True)
         
-    if args.task == "multi_weak":
+    elif args.task == "multi_weak" or args.task == "joint_decode":
         weak_model_list = []
         weak_tokenizer_list = []
         weak_model_names = args.weak_model_names.split(",")
@@ -182,7 +194,21 @@ def main(args):
         asrplace=args.asrplace,
         num_candidates=args.num_candidates,
     )
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True, use_fast=("pythia" in args.model_path))
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path, 
+                                              trust_remote_code=True, 
+                                              use_fast=("pythia" in args.weak_model_path or "bloom" in args.weak_model_path),
+                                              )
+    # Initialise model
+    llm = AutoModelForCausalLM.from_pretrained(
+        args.model_path,
+        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
+        # torch_dtype=torch.float32,
+        device_map="auto",
+    )
+    # model = KnowledgeLLM(llm, tokenizer).to(device)
+    model = KnowledgeLLM(llm, tokenizer)
+    del llm
+    
     with torch.no_grad():
         traindata.refill_labelset(step=0)
         if args.task == "normal":
@@ -190,8 +216,10 @@ def main(args):
             weakmodel.cpu()
         elif args.task == "multi_weak":
             traindata = get_next_labelset_multiweak(args, weak_tokenizer_list, weak_model_list, traindata)
-            # for weakmodel in weak_model_list:
-            #     weakmodel.cpu() 
+            del weak_model_list
+            del weak_tokenizer_list
+        elif args.task == "joint_decode":
+            traindata = get_next_labelset_jointdecode(args, weak_tokenizer_list, weak_model_list, traindata)
             del weak_model_list
             del weak_tokenizer_list
         traindata.tokenizer = tokenizer
@@ -204,16 +232,6 @@ def main(args):
     else:
         train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
     valid_dataloader = DataLoader(valdata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
-    # Initialise model
-    llm = AutoModelForCausalLM.from_pretrained(
-        args.model_path,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
-        # torch_dtype=torch.float32,
-        device_map="auto",
-    )
-    # model = KnowledgeLLM(llm, tokenizer).to(device)
-    model = KnowledgeLLM(llm, tokenizer)
-    del llm
 
     # Initialise criterion
     # criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
@@ -223,6 +241,19 @@ def main(args):
         criterion = logconf_loss_fn()
     elif args.criterion == "logconf_step":
         criterion = logconf_step_loss_fn()
+    elif args.criterion == "logconf_confer":
+        criterion = logconf_confer_loss_fn()
+    elif args.criterion == "dir":
+        criterion = DirLossFn()
+    elif args.criterion == "edl":
+        criterion = edl_log_loss_fn()
+    elif args.criterion == "edl_logconf":
+        criterion = edl_logconf_loss_fn()
+    elif args.criterion == "edl_logconf_step":
+        criterion = edl_logconf_step_loss_fn()
+    elif args.criterion == "edl_logconf_confer":
+        criterion = edl_logconf_confer_loss_fn()
+
     optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
     num_update_steps_per_epoch = math.ceil(len(traindata) / (args.gradient_accumulation_steps * args.batch_size))
     max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
@@ -263,8 +294,10 @@ def main(args):
         with torch.no_grad():
             val_loss = eval_one_epoch(
                 args,
+                epoch,
                 model,
                 valid_dataloader,
+                # criterion=criterion if "edl" in args.criterion else torch.nn.CrossEntropyLoss(ignore_index=-1),
                 criterion=torch.nn.CrossEntropyLoss(ignore_index=-1),
                 tokenizer=tokenizer,
             )
@@ -291,6 +324,30 @@ def save_checkpoint(model, tokenizer, outputdir, epoch):
     # else:
     model.llm.save_pretrained(fulloutput)
     return checkpoint
+
+
+def merge_outputs(outputs, slotdict):
+    new_output = {}
+    for output in outputs:
+        if "</s>" in output:
+            output = output.split("</s>")[0]
+        try:
+            outdict = json.loads(output)
+            for key, value in outdict.items():
+                value = " & ".join(value) if isinstance(value, list) else value
+                if value not in [i for v in new_output.values() for i in v]:
+                    if key in new_output and value not in new_output[key]:
+                        new_output[key].append(value)
+                    elif key not in new_output and key in slotdict:
+                        new_output[key] = [value]
+        except:
+            continue
+    for key, value in new_output.items():
+        try:
+            new_output[key] = " & ".join(value)
+        except:
+            continue
+    return json.dumps(new_output)
 
 
 def get_cascaded_uncertainty(model, prompt_nbest, generate_hyps, tokenizer, lengths, device):
@@ -387,7 +444,11 @@ def get_next_labelset(args, tokenizer, model, traindata, strongerset=None):
         uncertainties.append(predictive_entropy)
         for k, hyp in enumerate(outputs):
             # firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], predictive_entropy])
-            firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq, skip_special_tokens=True), predictive_entropy])
+            output_txt = tokenizer.decode(hyp.yseq, skip_special_tokens=True).strip()
+            if output_txt == "":
+                output_txt = "{}"
+            firstpass_ids_dict[slurp_ids[0]].append([output_txt, predictive_entropy])
+            # firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq, skip_special_tokens=True), predictive_entropy])
     uncertainties = sorted(uncertainties, reverse=True)
     threshold = uncertainties[int(args.unc_threshold * len(uncertainties))]
     logging(f"Threshold for uncertainty: {threshold}")
@@ -419,7 +480,16 @@ def get_next_labelset_multiweak(args, weak_tokenizer_list, weak_model_list, trai
             lengths = torch.tensor([len(hyp.yseq) for hyp in outputs]).to(model.llm.device)
             logplist = torch.stack([hyp.cumscore for hyp in outputs])
             predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
-            outputs_list.append([tokenizer.decode(outputs[0].yseq).split("</s>")[0], predictive_entropy])
+            # outputs_list.append([tokenizer.decode(outputs[0].yseq).split("</s>")[0], predictive_entropy])
+            # outputs_list.append([tokenizer.decode(outputs[0].yseq, skip_special_tokens=True).strip(), predictive_entropy])
+            output_txt = tokenizer.decode(outputs[0].yseq, skip_special_tokens=True).strip().split("</s>")[0]
+            empty = True
+            for char in output_txt:
+                if char not in string.punctuation:
+                    empty = False
+            if empty:
+                output_txt = "{}"
+            outputs_list.append([output_txt, predictive_entropy])
             uncertainties.append(predictive_entropy)
         firstpass_ids_dict[slurp_ids[0]] = outputs_list
     uncertainties = sorted(uncertainties, reverse=True)
@@ -434,8 +504,73 @@ def get_next_labelset_multiweak(args, weak_tokenizer_list, weak_model_list, trai
     traindata.multi_weak = True
     return traindata
         
+
 def get_next_labelset_jointdecode(args, weak_tokenizer_list, weak_model_list, traindata):
-    pass
+    traindata.preprocess = False
+    active_loader = DataLoader(traindata, batch_size=1, shuffle=False, collate_fn=collate_fn_active)
+    firstpass_ids_dict = {}
+    uncertainties = []
+    for batch in tqdm(active_loader):
+        slurp_ids, sequences, nbest, label = batch
+        outputs_list = []
+        value_list = []
+        for tokenizer, model in zip(weak_tokenizer_list, weak_model_list):
+            tokenized_seq = tokenizer(sequences[0], return_tensors="pt").input_ids.to(model.llm.device)
+            outputs = model.generate_beam(
+                tokenized_seq,
+                max_new_tokens=64,
+                beamsize=5,
+            )
+            lengths = torch.tensor([len(hyp.yseq) for hyp in outputs]).to(model.llm.device)
+            logplist = torch.stack([hyp.cumscore for hyp in outputs])
+            predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
+            for k, hyp in enumerate(outputs):
+                output_txt = tokenizer.decode(hyp.yseq, skip_special_tokens=True).strip().split("</s>")[0]
+                # # if output_txt == "":
+                # #     output_txt = "{}"
+                empty = True
+                for char in output_txt:
+                    if char not in string.punctuation:
+                        empty = False
+                if empty:
+                    output_txt = "{}"
+                # output_txt = merge_outputs(output_txt, traindata.slots)
+                outputs_list.append([output_txt, predictive_entropy])
+            value_list.append(predictive_entropy)
+
+        filtered_list = []
+        seen = set()
+        for result in outputs_list:
+            if result[0] not in seen:
+                filtered_list.append(result)
+                seen.add(result[0])
+
+        value = torch.stack(value_list).float()
+        value = torch.softmax(1/torch.sqrt(value), dim=-1)
+        for i, result in enumerate(filtered_list):
+            scores = torch.stack([model.scoring(sequences[0], result[0]) for model in weak_model_list])
+            # filtered_list[i].append(scores.mean())
+            filtered_list[i].append(scores)
+            weight = torch.Tensor([0.5, 0.2, 0.3]).to(scores.device)
+            scores = scores.matmul(weight)
+            # scores = scores.matmul(value)
+            # scores = scores.mean()
+            filtered_list[i].append(scores)
+        best_output = max(filtered_list, key=lambda x: x[3].item())
+
+        firstpass_ids_dict[slurp_ids[0]] = [best_output]
+        uncertainties.append(best_output[1])
+    uncertainties = sorted(uncertainties, reverse=True)
+    threshold = uncertainties[int(args.unc_threshold * len(uncertainties))]
+    logging(f"Threshold for uncertainty: {threshold}")
+    traindata.update_with_firstpass(
+        labelset=firstpass_ids_dict,
+        threshold=threshold,
+        update_label=True
+    )
+    traindata.preprocess = True
+    return traindata
+
 
 
 def calc_predictive_entropy(logp, temperature, lengths):
@@ -461,13 +596,21 @@ def train_one_epoch(args, epoch, model, train_dataloader, optimizer, lr_schedule
             )
             logits = output.logits
             seplosses = None
+            if "edl" in args.criterion:
+                xent, kl_div = criterion(logits, labels, step_frac, values)
+                
             if isinstance(criterion, torch.nn.CrossEntropyLoss):
                 loss = criterion(logits.view(-1, logits.size(-1)), labels.reshape(-1))
             else:
                 step_frac = (len(train_dataloader) * epoch + i) / len(train_dataloader) / args.num_train_epochs
                 loss = criterion(logits, labels, step_frac, values)
             loss = loss / args.gradient_accumulation_steps
+        check_nan(loss, "loss", (inputs, labels, loss))
         loss.backward()
+
+        for name, param in model.llm.named_parameters():
+            if param.grad is not None:
+                check_nan(param.grad, f"gradient of {name}", (inputs, labels))
 
         if (i + 1) % args.gradient_accumulation_steps == 0:
             # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -488,7 +631,8 @@ def train_one_epoch_multiweak(args, epoch, model, train_dataloader, optimizer, l
     kgloss = 0
     for i, batch in enumerate(train_dataloader):
         inputs_list, total_label_list, nbest_propmpt, values_list = batch
-        loss = 0
+        # loss = 0
+        loss = []
         with torch.cuda.amp.autocast():
             for inputs, labels, values in zip(inputs_list, total_label_list, values_list):
                 for key in inputs:
@@ -498,11 +642,21 @@ def train_one_epoch_multiweak(args, epoch, model, train_dataloader, optimizer, l
                 output, labels = model(inputs, labels, knowledge=knowledge)
                 logits = output.logits
                 if isinstance(criterion, torch.nn.CrossEntropyLoss):
-                    loss += criterion(logits.view(-1, logits.size(-1)), labels.reshape(-1))
+                    # loss += criterion(logits.view(-1, logits.size(-1)), labels.reshape(-1))
+                    loss.append(criterion(logits.view(-1, logits.size(-1)), labels.reshape(-1)))
                 else:
                     step_frac = (len(train_dataloader) * epoch + i) / len(train_dataloader) / args.num_train_epochs
-                    loss += criterion(logits, labels, step_frac, values)
-            loss = loss / args.gradient_accumulation_steps / len(inputs_list)
+                    # loss += criterion(logits, labels, step_frac, values)
+                    loss.append(criterion(logits, labels, step_frac, values))
+            # loss = loss / args.gradient_accumulation_steps / len(inputs_list)
+            loss = torch.stack(loss)
+            loss = loss / args.gradient_accumulation_steps
+            value = torch.stack(values_list)
+            value = torch.softmax(1/torch.sqrt(value), dim=-1)
+            loss = loss.matmul(value)
+            # weight = torch.Tensor([0.5, 0.1, 0.4]).to(loss.device)
+            # loss = loss.matmul(weight)
+            
         loss.backward()
 
         if (i + 1) % args.gradient_accumulation_steps == 0:
@@ -519,7 +673,7 @@ def train_one_epoch_multiweak(args, epoch, model, train_dataloader, optimizer, l
 
 
 
-def eval_one_epoch(args, model, valid_dataloader, criterion, knowledge=None, tokenizer=None):
+def eval_one_epoch(args, epoch, model, valid_dataloader, criterion, knowledge=None, tokenizer=None):
     total_tokens = 0
     total_loss = 0.
     total_kgloss = 0.
@@ -533,7 +687,12 @@ def eval_one_epoch(args, model, valid_dataloader, criterion, knowledge=None, tok
                 knowledge=knowledge,
             )
             logits = output.logits
-            loss = criterion(logits.reshape(-1, logits.size(-1)), labels.reshape(-1))
+            # loss = criterion(logits.reshape(-1, logits.size(-1)), labels.reshape(-1))
+            if isinstance(criterion, torch.nn.CrossEntropyLoss):
+                loss = criterion(logits.view(-1, logits.size(-1)), labels.reshape(-1))
+            else:
+                step_frac = epoch / args.num_train_epochs
+                loss = criterion(logits, labels, step_frac, values)
         tokens = (labels != -1).sum()
         total_tokens += tokens
         total_loss += loss.item() * tokens
@@ -704,6 +863,7 @@ if __name__ == "__main__":
         type=str,
         default="xent",
         help="Loss function",
+        choices=["xent", "logconf", "logconf_step", "logconf_confer", "dir", "edl", "edl_logconf", "edl_logconf_step", "edl_logconf_confer"]
     )
     parser.add_argument(
         "--use_lora",
@@ -715,7 +875,7 @@ if __name__ == "__main__":
         "--task",
         type=str,
         default="normal",
-        choices=["normal", "deliberation", "human_annotation", "multi_weak"],
+        choices=["normal", "deliberation", "human_annotation", "multi_weak", "joint_decode"],
         help="'normal' uses stronger model labels without deliberation. 'human_annotation' uses human labels. 'multi_weak' for multiple pretrained weak model.",
     )
     parser.add_argument(
