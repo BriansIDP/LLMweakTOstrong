@@ -380,6 +380,7 @@ def main(args):
     start = time.time()
     outputdict = {}
     count = 0
+    select = [0, 0, 0]
 
     with torch.no_grad():
         for slurpid, utterance in utterances.items():
@@ -432,6 +433,14 @@ def main(args):
                     if empty:
                         output_txt = "{}"
                     outputs_list.append([output_txt, predictive_entropy])
+                    # outputs_list.append(output_txt)
+                    # if "gpt2-large" in tokenizer.name_or_path:
+                    #     i = 0
+                    # elif "opt-1.3b" in tokenizer.name_or_path:
+                    #     i = 1
+                    # elif "pythia-1.4b" in tokenizer.name_or_path:
+                    #     i = 2
+                    # outputs_list.append([output_txt, i])
             
             filtered_list = []
             seen = set()
@@ -443,7 +452,7 @@ def main(args):
             for i, result in enumerate(filtered_list):
                 scores = torch.stack([model.scoring(prompt, result[0]) for model in model_list])
                 filtered_list[i].append(scores)
-                weight = torch.Tensor([0.5, 0.2, 0.3]).to(scores.device)
+                weight = torch.Tensor([0.5, 0.3, 0.2]).to(scores.device)
                 scores = scores.matmul(weight)
                 filtered_list[i].append(scores)
             best_output = max(filtered_list, key=lambda x: x[3].item())
@@ -452,6 +461,37 @@ def main(args):
             # print(predictive_entropy, unnorm_entropy, output)
             print(best_output)
             entity_f1, slu_f1 = calc_metrics(output, uttdict["label"])
+
+            # outputs = [[merge_outputs(output[0], slotdict), output[1]] for output in filtered_list]
+            # slu_f1_list = []
+            # entity_f1_list = []
+            # for output in outputs:
+            #     entity_f1, slu_f1 = calc_metrics(output[0], uttdict["label"])
+            #     entity_f1_list.append(entity_f1)
+            #     slu_f1_list.append(slu_f1)
+
+            # max_slu_f1 = max(slu_f1_list)
+            # for i, slu_f1 in enumerate(slu_f1_list):
+            #     if slu_f1 == max_slu_f1:
+            #         model_num = outputs[i][1]
+            #         select[model_num] += 1
+            # index = slu_f1_list.index(max_slu_f1)
+            # if index <= 4:
+            #     select[0] += 1
+            # elif index >= 10:
+            #     select[2] += 1
+            # else:
+            #     select[1] += 1
+
+
+            # outputdict[slurpid] = {
+            #     "output": outputs[index][0],
+            #     "entity_f1": entity_f1_list[index],
+            #     "slu_f1": max_slu_f1,
+            #     "beamsearch_entropy": 0,
+            #     "seg_correctness": 0,
+            #     "seg_uncertainty": 0,
+            # }
 
             outputdict[slurpid] = {
                 "output": output,
@@ -468,7 +508,9 @@ def main(args):
 
     with open(os.path.join(args.model_path, args.result_file), "w") as fout:
         json.dump(outputdict, fout, indent=4)
-            
+    print("Select count: ", select)
+    logging("Select count: ", select)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LLM finetuning")

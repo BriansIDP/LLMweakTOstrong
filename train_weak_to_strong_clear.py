@@ -30,14 +30,15 @@ from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 from peft import PeftConfig, PeftModel
 from torch.utils.data import DataLoader
 
-from dataset import collate_fn, ActiveDataset, collate_fn_active, collate_fn_multiweak
+from dataset import collate_fn, ActiveDataset, collate_fn_active, collate_fn_multiweak, wp_word_map
 from data.prompt import prompts
 from knowledgemodel import KnowledgeLLM
 from scoring.evaluation.metrics import ErrorMetric
 from scoring.evaluation.util import format_results, load_predictions, load_gold_data
 from scoring.evaluation.normalizers.english import EnglishTextNormalizer
 from loss import (logconf_loss_fn, logconf_step_loss_fn, logconf_confer_loss_fn, DirLossFn, 
-                  edl_log_loss_fn, edl_logconf_loss_fn, edl_logconf_step_loss_fn, edl_logconf_confer_loss_fn)
+                  edl_log_loss_fn, edl_logconf_loss_fn, edl_logconf_step_loss_fn, edl_logconf_confer_loss_fn,
+                  soft_kl_loss_fn, soft_step_conf_loss_fn, soft_confer_loss_fn)
 
 normaliser = EnglishTextNormalizer()
 
@@ -55,11 +56,11 @@ def logging(s, logging_=True, log_=True):
             f_log.write(s + '\n')
 
 
-def check_nan(tensor, name, data):
+def check_nan(tensor, name, data, step):
     if torch.isnan(tensor).any():
-        print(f"NaN detected in {name}")
+        print(f"NaN detected in {name} at step {step}")
         torch.save(data, os.path.join(args.outputdir, "nan_data.pt"))
-        raise ValueError(f"NaN detected in {name}")
+        raise ValueError(f"NaN detected in {name} at step {step}")
 
 
 def get_grouped_params(model):
@@ -143,7 +144,7 @@ def main(args):
         weak_model_names = args.weak_model_names.split(",")
         for weak_model_name in weak_model_names:
             pretrained_weak_model_path = os.path.join("exp/weak", weak_model_name, 'checkpoint.best')
-            weak_model_path = os.path.join("/mnt/nvme_share/cuizy/models", weak_model_name)
+            weak_model_path = os.path.join("/mnt/nvme_share/cuizy/models", weak_model_name.split('_')[0])
             weak_tokenizer = AutoTokenizer.from_pretrained(weak_model_path, use_fast=("pythia" in weak_model_path), trust_remote_code=True)
             if os.path.exists(pretrained_weak_model_path):
                 if os.path.exists(os.path.join(pretrained_weak_model_path, "model.safetensors")):
@@ -164,6 +165,7 @@ def main(args):
                     else:
                         load_sharded_checkpoint(weakllm, os.path.join(pretrained_weak_model_path))
                 weakmodel = KnowledgeLLM(weakllm, weak_tokenizer)
+                del weakllm
                 weakmodel.eval()
             else:
                 print("Error: Please input correct pretrained weak model path.")
@@ -218,6 +220,7 @@ def main(args):
             traindata = get_next_labelset_multiweak(args, weak_tokenizer_list, weak_model_list, traindata)
             del weak_model_list
             del weak_tokenizer_list
+            del weakmodel
         elif args.task == "joint_decode":
             traindata = get_next_labelset_jointdecode(args, weak_tokenizer_list, weak_model_list, traindata)
             del weak_model_list
@@ -247,12 +250,18 @@ def main(args):
         criterion = DirLossFn()
     elif args.criterion == "edl":
         criterion = edl_log_loss_fn()
-    elif args.criterion == "edl_logconf":
+    elif args.criterion == "edl_conf":
         criterion = edl_logconf_loss_fn()
-    elif args.criterion == "edl_logconf_step":
+    elif args.criterion == "edl_step":
         criterion = edl_logconf_step_loss_fn()
-    elif args.criterion == "edl_logconf_confer":
+    elif args.criterion == "edl_confer":
         criterion = edl_logconf_confer_loss_fn()
+    elif args.criterion == "soft":
+        criterion = soft_kl_loss_fn()
+    elif args.criterion == "soft_step":
+        criterion = soft_step_conf_loss_fn()
+    elif args.criterion == "soft_confer":
+        criterion = soft_confer_loss_fn()
 
     optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
     num_update_steps_per_epoch = math.ceil(len(traindata) / (args.gradient_accumulation_steps * args.batch_size))
@@ -268,28 +277,28 @@ def main(args):
     best_val_loss = 10000
     for epoch in range(args.num_train_epochs):
         model.train()
-        if args.task == "multi_weak":
-            model = train_one_epoch_multiweak(
-                args,
-                epoch,
-                model,
-                train_dataloader,
-                optimizer,
-                lr_scheduler,
-                criterion=criterion,
-                tokenizer=tokenizer,
-            )
-        else:
-            model = train_one_epoch(
-                args,
-                epoch,
-                model,
-                train_dataloader,
-                optimizer,
-                lr_scheduler,
-                criterion=criterion,
-                tokenizer=tokenizer,
-            )
+        # if args.task == "multi_weak":
+        #     model = train_one_epoch_multiweak(
+        #         args,
+        #         epoch,
+        #         model,
+        #         train_dataloader,
+        #         optimizer,
+        #         lr_scheduler,
+        #         criterion=criterion,
+        #         tokenizer=tokenizer,
+        #     )
+        # else:
+        model = train_one_epoch(
+            args,
+            epoch,
+            model,
+            train_dataloader,
+            optimizer,
+            lr_scheduler,
+            criterion=criterion,
+            tokenizer=tokenizer,
+        )
         model.eval()
         with torch.no_grad():
             val_loss = eval_one_epoch(
@@ -305,7 +314,8 @@ def main(args):
         current_lr = optimizer.param_groups[0]["lr"]
         logging(f"MAIN MODEL Epoch {epoch} | Validation PPL: {val_ppl} | Learning rate: {current_lr}")
         # Save models
-        # save_checkpoint(model, tokenizer, args.outputdir, epoch)
+        if epoch == args.num_train_epochs - 1:
+            save_checkpoint(model, tokenizer, args.outputdir, epoch)
         if val_loss < best_val_loss:
             logging(f"Saving best MAIN MODEL at Epoch {epoch}")
             save_checkpoint(model, tokenizer, args.outputdir, "best")
@@ -444,10 +454,25 @@ def get_next_labelset(args, tokenizer, model, traindata, strongerset=None):
         uncertainties.append(predictive_entropy)
         for k, hyp in enumerate(outputs):
             # firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], predictive_entropy])
-            output_txt = tokenizer.decode(hyp.yseq, skip_special_tokens=True).strip()
-            if output_txt == "":
+            output_txt = tokenizer.decode(hyp.yseq, skip_special_tokens=True).strip().split("</s>")[0]
+            wp_score = torch.Tensor(hyp.scores)
+            # if output_txt == "":
+            #     output_txt = "{}"
+            empty = True
+            for char in output_txt:
+                if char not in string.punctuation:
+                    empty = False
+            if empty:
                 output_txt = "{}"
-            firstpass_ids_dict[slurp_ids[0]].append([output_txt, predictive_entropy])
+                word_score = torch.sum(wp_score)
+            else:
+                weak_input_ids = tokenizer.encode(output_txt+"</s>")
+                mapping = wp_word_map(
+                    wordpiece_list=[tokenizer.decode(id).replace(' ', '') for id in weak_input_ids],
+                    word_list=(output_txt+"</s>").split(' ')
+                )
+                word_score = torch.stack([wp_score[start:end+1].sum() for start, end in mapping])
+            firstpass_ids_dict[slurp_ids[0]].append([output_txt, predictive_entropy, word_score])
             # firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq, skip_special_tokens=True), predictive_entropy])
     uncertainties = sorted(uncertainties, reverse=True)
     threshold = uncertainties[int(args.unc_threshold * len(uncertainties))]
@@ -483,13 +508,23 @@ def get_next_labelset_multiweak(args, weak_tokenizer_list, weak_model_list, trai
             # outputs_list.append([tokenizer.decode(outputs[0].yseq).split("</s>")[0], predictive_entropy])
             # outputs_list.append([tokenizer.decode(outputs[0].yseq, skip_special_tokens=True).strip(), predictive_entropy])
             output_txt = tokenizer.decode(outputs[0].yseq, skip_special_tokens=True).strip().split("</s>")[0]
+            wp_score = torch.Tensor(outputs[0].scores)
             empty = True
             for char in output_txt:
                 if char not in string.punctuation:
                     empty = False
             if empty:
                 output_txt = "{}"
-            outputs_list.append([output_txt, predictive_entropy])
+                word_score = torch.sum(wp_score)
+            else:
+                weak_input_ids = tokenizer.encode(output_txt+"</s>")
+                mapping = wp_word_map(
+                    wordpiece_list=[tokenizer.decode(id).replace(' ', '') for id in weak_input_ids],
+                    word_list=(output_txt+"</s>").split(' ')
+                )
+                word_score = torch.stack([wp_score[start:end+1].sum() for start, end in mapping])
+
+            outputs_list.append([output_txt, predictive_entropy, word_score])
             uncertainties.append(predictive_entropy)
         firstpass_ids_dict[slurp_ids[0]] = outputs_list
     uncertainties = sorted(uncertainties, reverse=True)
@@ -526,16 +561,24 @@ def get_next_labelset_jointdecode(args, weak_tokenizer_list, weak_model_list, tr
             predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
             for k, hyp in enumerate(outputs):
                 output_txt = tokenizer.decode(hyp.yseq, skip_special_tokens=True).strip().split("</s>")[0]
-                # # if output_txt == "":
-                # #     output_txt = "{}"
+                wp_score = torch.Tensor(hyp.scores)
+                # if output_txt == "":
+                #     output_txt = "{}"
                 empty = True
                 for char in output_txt:
                     if char not in string.punctuation:
                         empty = False
                 if empty:
                     output_txt = "{}"
-                # output_txt = merge_outputs(output_txt, traindata.slots)
-                outputs_list.append([output_txt, predictive_entropy])
+                    word_score = torch.sum(wp_score)
+                else:
+                    weak_input_ids = tokenizer.encode(output_txt+"</s>")
+                    mapping = wp_word_map(
+                        wordpiece_list=[tokenizer.decode(id).replace(' ', '') for id in weak_input_ids],
+                        word_list=(output_txt+"</s>").split(' ')
+                    )
+                    word_score = torch.stack([wp_score[start:end+1].sum() for start, end in mapping])
+                outputs_list.append([output_txt, predictive_entropy, word_score])
             value_list.append(predictive_entropy)
 
         filtered_list = []
@@ -556,7 +599,7 @@ def get_next_labelset_jointdecode(args, weak_tokenizer_list, weak_model_list, tr
             # scores = scores.matmul(value)
             # scores = scores.mean()
             filtered_list[i].append(scores)
-        best_output = max(filtered_list, key=lambda x: x[3].item())
+        best_output = max(filtered_list, key=lambda x: x[4].item())
 
         firstpass_ids_dict[slurp_ids[0]] = [best_output]
         uncertainties.append(best_output[1])
@@ -587,8 +630,8 @@ def train_one_epoch(args, epoch, model, train_dataloader, optimizer, lr_schedule
     start = time.time()
     kgloss = 0
     for i, batch in enumerate(train_dataloader):
-        inputs, labels, nbest_prompt, values = batch
-        with torch.cuda.amp.autocast():
+        inputs, labels, nbest_prompt, values, token_scores = batch
+        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
             output, labels = model(
                 inputs,
                 labels,
@@ -596,27 +639,31 @@ def train_one_epoch(args, epoch, model, train_dataloader, optimizer, lr_schedule
             )
             logits = output.logits
             seplosses = None
-            if "edl" in args.criterion:
-                xent, kl_div = criterion(logits, labels, step_frac, values)
-                
+            # if "edl" in args.criterion:
+            #     xent, kl_div = criterion(logits, labels, step_frac, values)
+
             if isinstance(criterion, torch.nn.CrossEntropyLoss):
                 loss = criterion(logits.view(-1, logits.size(-1)), labels.reshape(-1))
+            elif "soft" in args.criterion or "dir" in args.criterion or "edl" in args.criterion:
+                step_frac = (len(train_dataloader) * epoch + i) / len(train_dataloader) / args.num_train_epochs
+                loss = criterion(logits, labels, step_frac, values, token_scores)
             else:
                 step_frac = (len(train_dataloader) * epoch + i) / len(train_dataloader) / args.num_train_epochs
                 loss = criterion(logits, labels, step_frac, values)
             loss = loss / args.gradient_accumulation_steps
-        check_nan(loss, "loss", (inputs, labels, loss))
+        check_nan(loss, "loss", (inputs, labels, logits, loss, token_scores), i+1)
         loss.backward()
 
         for name, param in model.llm.named_parameters():
             if param.grad is not None:
-                check_nan(param.grad, f"gradient of {name}", (inputs, labels))
+                check_nan(param.grad, f"gradient of {name}", (inputs, labels, logits, loss, token_scores), i+1)
 
         if (i + 1) % args.gradient_accumulation_steps == 0:
             # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             lr_scheduler.step()
             optimizer.zero_grad()
+
         if (i + 1) % args.log_interval == 0:
             elasped_time = time.time() - start
             PPL = math.exp(loss.item() * args.gradient_accumulation_steps)
@@ -633,7 +680,7 @@ def train_one_epoch_multiweak(args, epoch, model, train_dataloader, optimizer, l
         inputs_list, total_label_list, nbest_propmpt, values_list = batch
         # loss = 0
         loss = []
-        with torch.cuda.amp.autocast():
+        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
             for inputs, labels, values in zip(inputs_list, total_label_list, values_list):
                 for key in inputs:
                     inputs[key] = inputs[key].to(model.llm.device)
@@ -679,8 +726,8 @@ def eval_one_epoch(args, epoch, model, valid_dataloader, criterion, knowledge=No
     total_kgloss = 0.
     total_kgtokens = 0
     for i, batch in enumerate(valid_dataloader):
-        inputs, labels, nbest_prompt, values = batch
-        with torch.cuda.amp.autocast():
+        inputs, labels, nbest_prompt, values, scores = batch
+        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
             output, labels = model(
                 inputs,
                 labels,
@@ -863,7 +910,8 @@ if __name__ == "__main__":
         type=str,
         default="xent",
         help="Loss function",
-        choices=["xent", "logconf", "logconf_step", "logconf_confer", "dir", "edl", "edl_logconf", "edl_logconf_step", "edl_logconf_confer"]
+        choices=["xent", "logconf", "logconf_step", "logconf_confer", "dir", "edl", "edl_conf", "edl_step", "edl_confer",
+                 "soft", "soft_conf", "soft_step", "soft_confer"]
     )
     parser.add_argument(
         "--use_lora",

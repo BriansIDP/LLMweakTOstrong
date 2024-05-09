@@ -351,23 +351,25 @@ def main(args):
     # else:
     #     state_dict = torch.load(os.path.join(args.model_path, args.main_ckpt, "pytorch_model.pt"))
     #     llm.load_state_dict(state_dict)
-
-    if train_args["use_lora"] == 'true':
-        llm = PeftModel.from_pretrained(llm, os.path.join(args.model_path, args.main_ckpt), adapter_name="ada_1")
-    elif os.path.exists(os.path.join(args.model_path, args.main_ckpt, "pytorch_model.pt")):
-        state_dict = torch.load(os.path.join(args.model_path, args.main_ckpt, "pytorch_model.pt"))
-        llm.load_state_dict(state_dict)
-    elif os.path.exists(os.path.join(args.model_path, args.main_ckpt, "model.safetensors")):
-        # state_dict = load_state_dict(os.path.join(args.model_path, args.main_ckpt, "model.safetensors"))
-        # llm.load_state_dict(state_dict)
-        llm = AutoModelForCausalLM.from_pretrained(
-            os.path.join(args.model_path, args.main_ckpt),
-            torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
-            # torch_dtype=torch.float32,
-            device_map="auto",
-        )
+    if os.path.exists(os.path.join(args.model_path, args.main_ckpt)):
+        if train_args["use_lora"] == 'true':
+            llm = PeftModel.from_pretrained(llm, os.path.join(args.model_path, args.main_ckpt), adapter_name="ada_1")
+        elif os.path.exists(os.path.join(args.model_path, args.main_ckpt, "pytorch_model.pt")):
+            state_dict = torch.load(os.path.join(args.model_path, args.main_ckpt, "pytorch_model.pt"))
+            llm.load_state_dict(state_dict)
+        elif os.path.exists(os.path.join(args.model_path, args.main_ckpt, "model.safetensors")):
+            # state_dict = load_state_dict(os.path.join(args.model_path, args.main_ckpt, "model.safetensors"))
+            # llm.load_state_dict(state_dict)
+            llm = AutoModelForCausalLM.from_pretrained(
+                os.path.join(args.model_path, args.main_ckpt),
+                torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32,
+                # torch_dtype=torch.float32,
+                device_map="auto",
+            )
+        else:
+            load_sharded_checkpoint(llm, os.path.join(args.model_path, args.main_ckpt))
     else:
-        load_sharded_checkpoint(llm, os.path.join(args.model_path, args.main_ckpt))
+        raise ValueError("Checkpoint don't exist.")
 
     model = KnowledgeLLM(llm, tokenizer, train_args["use_lora"])
     model.eval()

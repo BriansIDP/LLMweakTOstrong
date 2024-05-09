@@ -7,8 +7,8 @@ asrfile="data/${asrname}_2000.json"
 nsamples=2000
 # expdir="exp/SLURP_w2s/SLURP_vicuna7bASR_vicuna7b_${nsamples}_samples_weak1000sample"
 # expdir="exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsamples}_samples_weak500to2000"
-# expdir="exp/w2s/gpt2-large_to_llama2/lr1e-5_bs2*2_epoch4_edl_nokl"
-expdir="exp/weak/joint_decode"
+# expdir="exp/weak/joint_decode_5+3+2"
+expdir="exp/w2s_corr_weak/gop_to_llama2/edl/lr1e-5_bs1*2_epoch2_edl_rescale_confer1"
 # expdir="exp/SLURP/SLURP_vicuna1\3bv1.5_${nsamples}_samples_zeroshot_baseline2"
 logfile="$expdir/eval_log.txt"
 result_file="output_${asrname}_top1upperbound_iter1.json"
@@ -16,10 +16,10 @@ result_file="output_${asrname}_top1upperbound_iter1.json"
 if [ -e "${expdir}/${result_file}" ]; then
     echo "Infer has been done before"
 else
-    CUDA_VISIBLE_DEVICES=0 \
+    CUDA_VISIBLE_DEVICES=1 \
     python infer_single.py \
         --model_path $expdir \
-        --main_ckpt checkpoint.best \
+        --main_ckpt checkpoint.1 \
         --recogfile $asrfile \
         --result_file $result_file \
         --topn 1 \
@@ -31,10 +31,10 @@ else
         --calibration_t 1 \
         --tag upperbound_iter1 \
         --iteration 1 \
-        > ${expdir}/eval.log
+        > ${expdir}/eval.log 2>&1
 fi
     # --unc_threshold 0.06 \
-    # --cascaded \
+    # --cascaded \s
     # --ckptlist exp/checkpoints.txt \
     # --do_sampling \
     # --cutoff_prob 0.7 \
