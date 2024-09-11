@@ -37,10 +37,10 @@ pretrained_weak_model_path="exp/weak/pythia-1.4b/checkpoint.best"
 pretrained_strong_model_path=exp/debug/checkpoint.best_stronger
 
 
-expdir="exp/w2s_corr_weak/gop_to_llama2/edl/lr1e-5_bs1*2_epoch2_edl_rescale_confer5"
+expdir="exp/strong/llama2-ft-1"
 mkdir -p $expdir
 
-CUDA_VISIBLE_DEVICES=4 \
+CUDA_VISIBLE_DEVICES=0 \
 python train_weak_to_strong_clear.py \
     --model_path $modelpath \
     --weak_model_path $weakmodel \
@@ -64,8 +64,8 @@ python train_weak_to_strong_clear.py \
     --KBdrop 0.0 \
     --maxKBsize 0 \
     --lora_config data/lora_config.json \
-    --task multi_weak \
-    --criterion edl_confer \
+    --task human_annotation \
+    --criterion xent \
     --weak_model_names gpt2-large,opt-1.3b,pythia-1.4b \
     --asrplace none \
     --num_candidates 1 \
@@ -77,3 +77,4 @@ python train_weak_to_strong_clear.py \
     # --unc_threshold 0.5 \
     # --selflabelling \
     # --topn 10 \
+    # --strong_score_wordpiece \

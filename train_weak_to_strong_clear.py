@@ -1,7 +1,7 @@
 # import debugpy
 
 # # 5678是debugpy服务器监听的端口号，确保这个端口在你的系统上是空闲的
-# debugpy.listen(('0.0.0.0', 5678))
+# debugpy.listen(('0.0.0.0', 5679))
 # print("⏳ Waiting for debugger to attach...")
 
 # # 让debugpy等待VSCode的调试器连接
@@ -30,7 +30,7 @@ from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 from peft import PeftConfig, PeftModel
 from torch.utils.data import DataLoader
 
-from dataset import collate_fn, ActiveDataset, collate_fn_active, collate_fn_multiweak, wp_word_map
+from dataset import collate_fn, ActiveDataset, collate_fn_active, collate_fn_multiweak, wp_word_map, collate_fn_strongscore_mw
 from data.prompt import prompts
 from knowledgemodel import KnowledgeLLM
 from scoring.evaluation.metrics import ErrorMetric
@@ -209,32 +209,38 @@ def main(args):
     )
     # model = KnowledgeLLM(llm, tokenizer).to(device)
     model = KnowledgeLLM(llm, tokenizer)
-    del llm
     
-    with torch.no_grad():
-        traindata.refill_labelset(step=0)
-        if args.task == "normal":
-            traindata = get_next_labelset(args, weak_tokenizer, weakmodel, traindata)
-            weakmodel.cpu()
-        elif args.task == "multi_weak":
-            traindata = get_next_labelset_multiweak(args, weak_tokenizer_list, weak_model_list, traindata)
-            del weak_model_list
-            del weak_tokenizer_list
-            del weakmodel
-        elif args.task == "joint_decode":
-            traindata = get_next_labelset_jointdecode(args, weak_tokenizer_list, weak_model_list, traindata)
-            del weak_model_list
-            del weak_tokenizer_list
-        traindata.tokenizer = tokenizer
-        valdata.refill_labelset(step=0)
-        # if args.task != "human_annotation":
-        #     valdata = get_next_labelset(args, weak_tokenizer, weakmodel, valdata)
-        valdata.tokenizer = tokenizer
-    if args.task == "multi_weak":
-        train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn_multiweak)
-    else:
-        train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
-    valid_dataloader = DataLoader(valdata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
+    # with torch.no_grad():
+    #     traindata.refill_labelset(step=0)
+    #     if args.task == "normal":
+    #         traindata = get_next_labelset(args, weak_tokenizer, weakmodel, traindata)
+    #         weakmodel.cpu()
+    #     elif args.task == "multi_weak":
+    #         traindata = get_next_labelset_multiweak(args, weak_tokenizer_list, weak_model_list, traindata)
+    #         del weak_model_list
+    #         del weak_tokenizer_list
+    #         del weakmodel
+    #     elif args.task == "joint_decode":
+    #         traindata = get_next_labelset_jointdecode(args, weak_tokenizer_list, weak_model_list, traindata)
+    #         del weak_model_list
+    #         del weak_tokenizer_list
+    #         del weakmodel
+    #     traindata.tokenizer = tokenizer
+    #     valdata.refill_labelset(step=0)
+    #     # if args.task != "human_annotation":
+    #     #     valdata = get_next_labelset(args, weak_tokenizer, weakmodel, valdata)
+    #     valdata.tokenizer = tokenizer
+    # # if args.task == "multi_weak":
+    # if args.strong_score_wordpiece:
+    #     traindata.multi_weak = True
+    #     traindata.strong_score = True
+    #     train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn_strongscore_mw)
+    # else:
+    #     if args.task == "multi_weak":
+    #         train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn_multiweak)
+    #     else:
+    #         train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
+    # valid_dataloader = DataLoader(valdata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
 
     # Initialise criterion
     # criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
@@ -263,6 +269,53 @@ def main(args):
     elif args.criterion == "soft_confer":
         criterion = soft_confer_loss_fn()
 
+    # optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
+    # x = "User: Hello!  ASSIANT: Hello!"
+#     x = '''USER: Consider the following list of slot types provided to you:\n
+# "event_name", "date", "person", "time", "news_topic", "relation", "list_name", "media_type", "business_name", "weather_descriptor", "music_genre", "house_place", "game_name", "food_type", "timeofday", "place_name", "definition_word", "email_address", "transport_agency", "movie_name", "artist_name", "transport_type", "joke_type", "movie_type", "time_zone", "music_descriptor", "device_type", "color_type", "meal_type", "player_setting", "podcast_name", "email_folder", "song_name", "change_amount", "business_type", "personal_info", "radio_name", "coffee_type", "audiobook_author", "audiobook_name", "currency_name", "playlist_name", "podcast_descriptor", "general_frequency", "music_album", "app_name", "order_type", "transport_name", "transport_descriptor", "cooking_type", "ingredient", "alarm_type", "drink_type", "sport_type", "game_type"\n
+# Now consider the following sentence(s) containing one or more of the above slot types. Can you extract slots belonging to that slot list and their values in json format i.e. \\{"slot type": "value"\\}? ONLY print out the json, or only print \\{\\} if no slot.\n
+# "need information about events before shift ends"\n
+# ASSISTANT:'''
+#     input_x = tokenizer(x, return_tensors="pt").to(model.llm.device).data
+#     output, _ = model(input_x, labels=None, knowledge=None)
+#     logits = output.logits
+#     loss = torch.nn.functional.cross_entropy(logits.squeeze(), target=input_x["input_ids"].squeeze())
+#     loss.backward()
+
+    with torch.no_grad():
+        traindata.refill_labelset(step=0)
+        if args.task == "normal":
+            traindata = get_next_labelset(args, weak_tokenizer, weakmodel, traindata)
+            weakmodel.cpu()
+        elif args.task == "multi_weak":
+            traindata = get_next_labelset_multiweak(args, weak_tokenizer_list, weak_model_list, traindata)
+            del weak_model_list
+            del weak_tokenizer_list
+            del weakmodel
+        elif args.task == "joint_decode":
+            traindata = get_next_labelset_jointdecode(args, weak_tokenizer_list, weak_model_list, traindata)
+            del weak_model_list
+            del weak_tokenizer_list
+            del weakmodel
+        traindata.tokenizer = tokenizer
+        valdata.refill_labelset(step=0)
+        # if args.task != "human_annotation":
+        #     valdata = get_next_labelset(args, weak_tokenizer, weakmodel, valdata)
+        valdata.tokenizer = tokenizer
+    # if args.task == "multi_weak":
+    if args.strong_score_wordpiece:
+        traindata.multi_weak = True
+        traindata.strong_score = True
+        train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn_strongscore_mw)
+    else:
+        if args.task == "multi_weak":
+            train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn_multiweak)
+        else:
+            train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
+    valid_dataloader = DataLoader(valdata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
+
+    del llm
+
     optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
     num_update_steps_per_epoch = math.ceil(len(traindata) / (args.gradient_accumulation_steps * args.batch_size))
     max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
@@ -277,28 +330,29 @@ def main(args):
     best_val_loss = 10000
     for epoch in range(args.num_train_epochs):
         model.train()
-        # if args.task == "multi_weak":
-        #     model = train_one_epoch_multiweak(
-        #         args,
-        #         epoch,
-        #         model,
-        #         train_dataloader,
-        #         optimizer,
-        #         lr_scheduler,
-        #         criterion=criterion,
-        #         tokenizer=tokenizer,
-        #     )
-        # else:
-        model = train_one_epoch(
-            args,
-            epoch,
-            model,
-            train_dataloader,
-            optimizer,
-            lr_scheduler,
-            criterion=criterion,
-            tokenizer=tokenizer,
-        )
+        # if args.task == "multi_weak" and args.strong_score_wordpiece:
+        if args.strong_score_wordpiece:
+            model = train_one_epoch_multiweak(
+                args,
+                epoch,
+                model,
+                train_dataloader,
+                optimizer,
+                lr_scheduler,
+                criterion=criterion,
+                tokenizer=tokenizer,
+            )
+        else:
+            model = train_one_epoch(
+                args,
+                epoch,
+                model,
+                train_dataloader,
+                optimizer,
+                lr_scheduler,
+                criterion=criterion,
+                tokenizer=tokenizer,
+            )
         model.eval()
         with torch.no_grad():
             val_loss = eval_one_epoch(
@@ -316,10 +370,10 @@ def main(args):
         # Save models
         if epoch == args.num_train_epochs - 1:
             save_checkpoint(model, tokenizer, args.outputdir, epoch)
-        if val_loss < best_val_loss:
-            logging(f"Saving best MAIN MODEL at Epoch {epoch}")
-            save_checkpoint(model, tokenizer, args.outputdir, "best")
-            best_val_loss = val_loss
+        # if val_loss < best_val_loss:
+        #     logging(f"Saving best MAIN MODEL at Epoch {epoch}")
+        #     save_checkpoint(model, tokenizer, args.outputdir, "best")
+        #     best_val_loss = val_loss
 
 
 def save_checkpoint(model, tokenizer, outputdir, epoch):
@@ -487,6 +541,7 @@ def get_next_labelset(args, tokenizer, model, traindata, strongerset=None):
     traindata.preprocess = True
     return traindata
 
+
 def get_next_labelset_multiweak(args, weak_tokenizer_list, weak_model_list, traindata):
     traindata.preprocess = False
     active_loader = DataLoader(traindata, batch_size=1, shuffle=False, collate_fn=collate_fn_active)
@@ -601,19 +656,29 @@ def get_next_labelset_jointdecode(args, weak_tokenizer_list, weak_model_list, tr
             filtered_list[i].append(scores)
         best_output = max(filtered_list, key=lambda x: x[4].item())
 
-        firstpass_ids_dict[slurp_ids[0]] = [best_output]
+        if args.strong_score_wordpiece:
+            firstpass_ids_dict[slurp_ids[0]] = [[best_output[0], best_output[1], best_output[2]]]
+        else:
+            firstpass_ids_dict[slurp_ids[0]] = [best_output]
         uncertainties.append(best_output[1])
     uncertainties = sorted(uncertainties, reverse=True)
     threshold = uncertainties[int(args.unc_threshold * len(uncertainties))]
     logging(f"Threshold for uncertainty: {threshold}")
-    traindata.update_with_firstpass(
-        labelset=firstpass_ids_dict,
-        threshold=threshold,
-        update_label=True
-    )
+    if args.strong_score_wordpiece:
+        traindata.update_with_firstpass_multiweak(
+            labelset=firstpass_ids_dict,
+            threshold=threshold,
+            update_label=True
+        )
+        traindata.multiweak = True
+    else:
+        traindata.update_with_firstpass(
+            labelset=firstpass_ids_dict,
+            threshold=threshold,
+            update_label=True
+        )
     traindata.preprocess = True
     return traindata
-
 
 
 def calc_predictive_entropy(logp, temperature, lengths):
@@ -674,35 +739,61 @@ def train_one_epoch(args, epoch, model, train_dataloader, optimizer, lr_schedule
 def train_one_epoch_multiweak(args, epoch, model, train_dataloader, optimizer, lr_scheduler, criterion, knowledge=None, tokenizer=None):
     optimizer.zero_grad()
     trainsize = len(train_dataloader)
-    start = time.time()
+    start_time = time.time()
     kgloss = 0
     for i, batch in enumerate(train_dataloader):
-        inputs_list, total_label_list, nbest_propmpt, values_list = batch
+        inputs_list, total_label_list, nbest_propmpt, values_list, score_list, mapping_list = batch
         # loss = 0
         loss = []
         with torch.cuda.amp.autocast(dtype=torch.bfloat16):
-            for inputs, labels, values in zip(inputs_list, total_label_list, values_list):
+            utterance_score_list = []
+            for inputs, labels, values, wd_score, mapping in zip(inputs_list, total_label_list, values_list, score_list, mapping_list):
                 for key in inputs:
                     inputs[key] = inputs[key].to(model.llm.device)
                 labels = labels.to(model.llm.device)
                 values = values.to(model.llm.device)
+                wd_score = wd_score.to(model.llm.device)
+                if wd_score.numel() == 1:
+                    wd_score = wd_score.unsqueeze(0)
+                utterance_score_list.append(wd_score.mean().item())
+
                 output, labels = model(inputs, labels, knowledge=knowledge)
                 logits = output.logits
+
+                labels = labels.reshape(-1)
+                lossmask = (labels == -1)
+                logits = logits.reshape(-1, logits.size(-1))
+                logits = logits[lossmask == False]
+                labels = labels[lossmask == False]
+                probs = torch.softmax(logits, dim=-1)
+                wp_score_list = []
+                for j, (start, end) in enumerate(mapping):
+                    strong_probs, _ = torch.max(probs[start:end+1], dim=-1)
+                    # wp_score = torch.softmax(-strong_probs/0.3, dim=0) * wd_score[j]
+                    wp_score = torch.softmax(-strong_probs, dim=0) * wd_score[j]
+                    wp_score_list.append(wp_score.detach())
+                score = torch.concat(wp_score_list, dim=0)
+                assert len(score) == len(labels)
+
                 if isinstance(criterion, torch.nn.CrossEntropyLoss):
-                    # loss += criterion(logits.view(-1, logits.size(-1)), labels.reshape(-1))
                     loss.append(criterion(logits.view(-1, logits.size(-1)), labels.reshape(-1)))
+                elif "soft" in args.criterion or "dir" in args.criterion or "edl" in args.criterion:
+                    step_frac = (len(train_dataloader) * epoch + i) / len(train_dataloader) / args.num_train_epochs
+                    loss.append(criterion(logits, labels, step_frac, values, score))
                 else:
                     step_frac = (len(train_dataloader) * epoch + i) / len(train_dataloader) / args.num_train_epochs
-                    # loss += criterion(logits, labels, step_frac, values)
                     loss.append(criterion(logits, labels, step_frac, values))
             # loss = loss / args.gradient_accumulation_steps / len(inputs_list)
-            loss = torch.stack(loss)
+            if len(loss) == 1:
+                loss = loss[0]
+            else:
+                loss = torch.stack(loss)
+                weight = torch.Tensor([0.25, 0.25, 0.5]).to(loss.device)
+                score_weight = torch.softmax(torch.Tensor(utterance_score_list), dim=0).to(loss.device)
+                # loss = loss.mean()
+                loss = loss.matmul(weight)
+            # loss = loss.matmul(score_weight)
             loss = loss / args.gradient_accumulation_steps
-            value = torch.stack(values_list)
-            value = torch.softmax(1/torch.sqrt(value), dim=-1)
-            loss = loss.matmul(value)
-            # weight = torch.Tensor([0.5, 0.1, 0.4]).to(loss.device)
-            # loss = loss.matmul(weight)
             
         loss.backward()
 
@@ -711,8 +802,9 @@ def train_one_epoch_multiweak(args, epoch, model, train_dataloader, optimizer, l
             optimizer.step()
             lr_scheduler.step()
             optimizer.zero_grad()
+
         if (i + 1) % args.log_interval == 0:
-            elasped_time = time.time() - start
+            elasped_time = time.time() - start_time
             PPL = math.exp(loss.item() * args.gradient_accumulation_steps)
             logging(f"Epoch {epoch} | Batch {i}/{trainsize} | PPL: {PPL} | time {elasped_time}")
 
@@ -963,5 +1055,10 @@ if __name__ == "__main__":
         help="Size of ensemble",
     )
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--strong_score_wordpiece", 
+        action="store_true",
+        help="Whether to split wordpiece score according to strong model logits. "
+    )
     args = parser.parse_args()
     main(args)

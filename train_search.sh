@@ -18,8 +18,8 @@ valfile=data/validlabel_nbest.json
 
 
 # weakmodel=ckpt/vicuna-7b-v1.5
-weakmodel=/mnt/nvme_share/cuizy/models/gpt2-large
-# weakmodel=/mnt/nvme_share/cuizy/models/pythia-1.4b
+# weakmodel=/mnt/nvme_share/cuizy/models/gpt2-large
+weakmodel=/mnt/nvme_share/cuizy/models/pythia-1.4b
 # weakmodel=/mnt/nvme_share/cuizy/models/opt-1.3b
 # weakmodel=/mnt/nvme_share/cuizy/models/bloom-560m
 modelpath=/mnt/nvme_share/cuizy/models/llama-2-7b-hf
@@ -28,20 +28,23 @@ modelpath=/mnt/nvme_share/cuizy/models/llama-2-7b-hf
 # modelpath=/mnt/nvme_share/cuizy/models/pythia-1.4b
 # modelpath=/mnt/nvme_share/cuizy/models/bloom-560m
 
-pretrained_weak_model_path="exp/weak/gpt2-large_1/checkpoint.best"
-# pretrained_weak_model_path="exp/weak/opt-1.3b_1/checkpoint.best"
-# pretrained_weak_model_path="exp/weak/pythia-1.4b_1/checkpoint.best"
+# pretrained_weak_model_path="exp/weak/gpt2-large/checkpoint.best"
+# pretrained_weak_model_path="exp/weak/opt-1.3b/checkpoint.best"
+pretrained_weak_model_path="exp/weak/pythia-1.4b/checkpoint.best"
 
-loss_list="soft soft_confer soft_step"
-# loss_list="edl edl_logconf_step"
-
+# loss_list="xent logconf_step"
+# loss_list="soft soft_step"
+loss_list="edl"
+count_list="0 1 2"
+for num in $count_list
+do
 for loss in $loss_list
 do
-
-    expdir="exp/w2s_corr_weak/gpt2_to_llama2/lr1e-5_bs1*2_epoch2_${loss}"
+    expdir="exp/w2s_corr_weak/gop_to_llama2/back/lr1e-5_bs1*2_epoch2_${loss}_hard_check_${num}"
     mkdir -p $expdir
+    cp train_search.sh $expdir
 
-    CUDA_VISIBLE_DEVICES=0 \
+    CUDA_VISIBLE_DEVICES=4 \
     python train_weak_to_strong_clear.py \
         --model_path $modelpath \
         --weak_model_path $weakmodel \
@@ -65,11 +68,13 @@ do
         --KBdrop 0.0 \
         --maxKBsize 0 \
         --lora_config data/lora_config.json \
-        --task normal \
+        --task multi_weak \
         --criterion $loss \
-        --weak_model_names gpt2-large_1,opt-1.3b_1,pythia-1.4b_1 \
+        --weak_model_names gpt2-large,opt-1.3b,pythia-1.4b \
         --asrplace none \
         --num_candidates 1 \
+        --strong_score_wordpiece \
         > ${expdir}/train_log.log 2>&1
-
 done
+done
+# --weak_model_names gpt2-large_1,opt-1.3b_1,pythia-1.4b_1 \

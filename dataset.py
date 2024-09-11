@@ -52,6 +52,7 @@ class ActiveDataset(Dataset):
         self.num_candidates = num_candidates
         self.multi_weak = False
         self.per_token_score = False
+        self.strong_score = False
 
     def get_labelled_set(self, labelset):
         self.labelled = []
@@ -211,31 +212,49 @@ class ActiveDataset(Dataset):
         prompt_inputs = self.tokenizer(prompt, return_tensors="pt")
         total_ids_list = []
         total_label_list = []
-        token_score_list = []
-        for label, score in zip(label_list, score_list):
-            label_ids = self.tokenizer(label + "</s>", return_tensors="pt")["input_ids"]
-            label_ids = label_ids[0, 1:] if label_ids[0, 0] == 1 else label_ids[0]
-            total_ids = torch.cat([prompt_inputs["input_ids"][0], label_ids], dim=-1)
-            total_label = torch.cat([prompt_inputs["input_ids"][0] * 0 - 1, label_ids], dim=-1)
+        if not self.strong_score:
+            token_score_list = []
+            for label, score in zip(label_list, score_list):
+                label_ids = self.tokenizer(label + "</s>", return_tensors="pt")["input_ids"]
+                label_ids = label_ids[0, 1:] if label_ids[0, 0] == 1 else label_ids[0]
+                total_ids = torch.cat([prompt_inputs["input_ids"][0], label_ids], dim=-1)
+                total_label = torch.cat([prompt_inputs["input_ids"][0] * 0 - 1, label_ids], dim=-1)
 
-            mapping = wp_word_map(
-                wordpiece_list=[self.tokenizer.decode(id).replace(' ', '') for id in label_ids],
-                word_list=(label+"</s>").split(' ')
-            )
-            if score == {}:
-                token_score = {}
-            elif score.numel() == 1:
-                token_score = torch.full((len(label_ids), ), score.item() / len(label_ids))
-            else:
-                token_score = torch.zeros(len(label_ids))
-                for i, (start, end) in enumerate(mapping):
-                    token_score[start:end+1] = score[i] / (end-start+1)
+                mapping = wp_word_map(
+                    wordpiece_list=[self.tokenizer.decode(id).replace(' ', '') for id in label_ids],
+                    word_list=(label+"</s>").split(' ')
+                )
+                if score == {}:
+                    token_score = {}
+                elif score.numel() == 1:
+                    token_score = torch.full((len(label_ids), ), score.item() / len(label_ids))
+                else:
+                    token_score = torch.zeros(len(label_ids))
+                    for i, (start, end) in enumerate(mapping):
+                        token_score[start:end+1] = score[i] / (end-start+1)
 
-            total_ids_list.append(total_ids)
-            total_label_list.append(total_label)
-            token_score_list.append(token_score)
-        return total_ids_list, total_label_list, nbest_prompt, values, token_score_list
+                total_ids_list.append(total_ids)
+                total_label_list.append(total_label)
+                token_score_list.append(token_score)
+            return total_ids_list, total_label_list, nbest_prompt, values, token_score_list
+        
+        elif self.strong_score:
+            mapping_list = []
+            for label, score in zip(label_list, score_list):
+                label_ids = self.tokenizer(label + "</s>", return_tensors="pt")["input_ids"]
+                label_ids = label_ids[0, 1:] if label_ids[0, 0] == 1 else label_ids[0]
+                total_ids = torch.cat([prompt_inputs["input_ids"][0], label_ids], dim=-1)
+                total_label = torch.cat([prompt_inputs["input_ids"][0] * 0 - 1, label_ids], dim=-1)
 
+                mapping = wp_word_map(
+                    wordpiece_list=[self.tokenizer.decode(id).replace(' ', '') for id in label_ids],
+                    word_list=(label+"</s>").split(' ')
+                )
+
+                total_ids_list.append(total_ids)
+                total_label_list.append(total_label)
+                mapping_list.append(mapping)
+            return total_ids_list, total_label_list, nbest_prompt, values, score_list, mapping_list
 
 
 def collate_fn_active(batch):
@@ -262,10 +281,12 @@ def collate_fn_multiweak(batch):
     '''
     Only works for batch_size=1 for now.
     '''
-    # total_ids_list, total_label_list, nbest, values_list = zip(*batch)
+    # total_ids_list, total_label_list, nbest, values_list, score_list, mapping_list = zip(*batch)
     # total_ids_list = total_ids_list[0]
     # total_label_list = total_label_list[0]
     # values_list = values_list[0]
+    # score_list = score_list[0]
+    # mapping_list = mapping_list[0]
     # inputs_list = []
     # for i in range(len(total_ids_list)):
     #     # total_ids_list[i].unsqueeze(0)
@@ -275,7 +296,8 @@ def collate_fn_multiweak(batch):
     #     total_label_list[i] = total_label_list[i][:, 1:]
     #     attention_mask = total_ids_list[i] != 0
     #     inputs_list.append({"input_ids": total_ids_list[i][:, :-1], "attention_mask": attention_mask[:, :-1]})
-    # return inputs_list, total_label_list, nbest, values_list
+    # return inputs_list, total_label_list, nbest, values_list, score_list, mapping_list
+
     total_ids, total_label, nbest, values, scores = zip(*batch)
 
     total_ids = pad_sequence(total_ids[0], batch_first=True, padding_value=0).to(device)
@@ -288,6 +310,28 @@ def collate_fn_multiweak(batch):
     if scores[0][0] != {}:
         scores = torch.concat(scores[0], dim=0)
     return inputs, total_label[:, 1:], nbest, values, scores
+
+
+def collate_fn_strongscore_mw(batch):
+    '''
+    task == multi_weak and strong_score_wordpiece == True
+    '''
+    total_ids_list, total_label_list, nbest, values_list, score_list, mapping_list = zip(*batch)
+    total_ids_list = total_ids_list[0]
+    total_label_list = total_label_list[0]
+    values_list = values_list[0]
+    score_list = score_list[0]
+    mapping_list = mapping_list[0]
+    inputs_list = []
+    for i in range(len(total_ids_list)):
+        # total_ids_list[i].unsqueeze(0)
+        # total_label_list[i].unsqueeze(0)
+        total_ids_list[i] = torch.unsqueeze(total_ids_list[i], dim=0)
+        total_label_list[i] = torch.unsqueeze(total_label_list[i], dim=0)
+        total_label_list[i] = total_label_list[i][:, 1:]
+        attention_mask = total_ids_list[i] != 0
+        inputs_list.append({"input_ids": total_ids_list[i][:, :-1], "attention_mask": attention_mask[:, :-1]})
+    return inputs_list, total_label_list, nbest, values_list, score_list, mapping_list
 
 
 def wp_word_map(wordpiece_list, word_list):

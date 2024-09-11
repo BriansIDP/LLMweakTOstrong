@@ -26,8 +26,8 @@ from transformers.modeling_utils import load_sharded_checkpoint, safe_load_file,
 from peft import PeftModel, PeftConfig
 
 from data.prompt import templates, prompts
-from knowledgemodel import KnowledgeLLM
-# from model import KnowledgeLLM
+# from knowledgemodel import KnowledgeLLM
+from model_back import KnowledgeLLM
 from scoring.evaluation.metrics import ErrorMetric
 from scoring.evaluation.util import format_results, load_predictions, load_gold_data
 from scoring.evaluation.normalizers.english import EnglishTextNormalizer
@@ -433,7 +433,7 @@ def main(args):
             # Get outputs
             outputs = model.tokenizer.batch_decode([generate_hyps[newbest_ind].yseq], skip_special_tokens=True, clean_up_tokenization_spaces=False)
             output = merge_outputs(outputs, slotdict)
-            print(predictive_entropy, unnorm_entropy, output)
+            print(predictive_entropy, unnorm_entropy, outputs)
             entity_f1, slu_f1 = calc_metrics(output, uttdict["label"])
 
             outputdict[slurpid] = {
