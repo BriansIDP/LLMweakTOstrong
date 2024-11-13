@@ -91,6 +91,7 @@ def main(args):
     os.system("cp {} {}".format("train_weak_to_strong_clear.py", os.path.join(args.outputdir, "train.py")))
     os.system("cp {} {}".format("knowledgemodel.py", os.path.join(args.outputdir, "model.py")))
     os.system("cp {} {}".format("loss.py", os.path.join(args.outputdir, "loss.py")))
+    os.system("cp {} {}".format("dataset.py", os.path.join(args.outputdir, "dataset.py")))
 
     ## Meta data
     with open("data/slotlist{}.json".format("_zero" if "_zero" in args.outputdir else "")) as fin:
@@ -108,7 +109,7 @@ def main(args):
     # Load weak model first
     ##########################################
     if args.task == "normal":
-        weak_tokenizer = AutoTokenizer.from_pretrained(args.weak_model_path, use_fast=("pythia" in args.weak_model_path), trust_remote_code=True)
+        weak_tokenizer = AutoTokenizer.from_pretrained(args.weak_model_path, use_fast=("pythia" in args.weak_model_path or "bloom" in args.weak_model_path), trust_remote_code=True)
         if os.path.exists(args.pretrained_weak_model_path):
             if os.path.exists(os.path.join(args.pretrained_weak_model_path, "model.safetensors")):
                 weakllm = AutoModelForCausalLM.from_pretrained(
@@ -144,8 +145,8 @@ def main(args):
         weak_model_names = args.weak_model_names.split(",")
         for weak_model_name in weak_model_names:
             pretrained_weak_model_path = os.path.join("exp/weak", weak_model_name, 'checkpoint.best')
-            weak_model_path = os.path.join("/mnt/nvme_share/cuizy/models", weak_model_name.split('_')[0])
-            weak_tokenizer = AutoTokenizer.from_pretrained(weak_model_path, use_fast=("pythia" in weak_model_path), trust_remote_code=True)
+            weak_model_path = os.path.join("/mnt/nvme_share/cuizy/models", weak_model_name)
+            weak_tokenizer = AutoTokenizer.from_pretrained(weak_model_path, use_fast=("pythia" in args.weak_model_path or "bloom" in args.weak_model_path), trust_remote_code=True)
             if os.path.exists(pretrained_weak_model_path):
                 if os.path.exists(os.path.join(pretrained_weak_model_path, "model.safetensors")):
                     weakllm = AutoModelForCausalLM.from_pretrained(
@@ -209,79 +210,8 @@ def main(args):
     )
     # model = KnowledgeLLM(llm, tokenizer).to(device)
     model = KnowledgeLLM(llm, tokenizer)
+    del llm
     
-    # with torch.no_grad():
-    #     traindata.refill_labelset(step=0)
-    #     if args.task == "normal":
-    #         traindata = get_next_labelset(args, weak_tokenizer, weakmodel, traindata)
-    #         weakmodel.cpu()
-    #     elif args.task == "multi_weak":
-    #         traindata = get_next_labelset_multiweak(args, weak_tokenizer_list, weak_model_list, traindata)
-    #         del weak_model_list
-    #         del weak_tokenizer_list
-    #         del weakmodel
-    #     elif args.task == "joint_decode":
-    #         traindata = get_next_labelset_jointdecode(args, weak_tokenizer_list, weak_model_list, traindata)
-    #         del weak_model_list
-    #         del weak_tokenizer_list
-    #         del weakmodel
-    #     traindata.tokenizer = tokenizer
-    #     valdata.refill_labelset(step=0)
-    #     # if args.task != "human_annotation":
-    #     #     valdata = get_next_labelset(args, weak_tokenizer, weakmodel, valdata)
-    #     valdata.tokenizer = tokenizer
-    # # if args.task == "multi_weak":
-    # if args.strong_score_wordpiece:
-    #     traindata.multi_weak = True
-    #     traindata.strong_score = True
-    #     train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn_strongscore_mw)
-    # else:
-    #     if args.task == "multi_weak":
-    #         train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn_multiweak)
-    #     else:
-    #         train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
-    # valid_dataloader = DataLoader(valdata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
-
-    # Initialise criterion
-    # criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
-    if args.criterion == "xent":
-        criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
-    elif args.criterion == "logconf":
-        criterion = logconf_loss_fn()
-    elif args.criterion == "logconf_step":
-        criterion = logconf_step_loss_fn()
-    elif args.criterion == "logconf_confer":
-        criterion = logconf_confer_loss_fn()
-    elif args.criterion == "dir":
-        criterion = DirLossFn()
-    elif args.criterion == "edl":
-        criterion = edl_log_loss_fn()
-    elif args.criterion == "edl_conf":
-        criterion = edl_logconf_loss_fn()
-    elif args.criterion == "edl_step":
-        criterion = edl_logconf_step_loss_fn()
-    elif args.criterion == "edl_confer":
-        criterion = edl_logconf_confer_loss_fn()
-    elif args.criterion == "soft":
-        criterion = soft_kl_loss_fn()
-    elif args.criterion == "soft_step":
-        criterion = soft_step_conf_loss_fn()
-    elif args.criterion == "soft_confer":
-        criterion = soft_confer_loss_fn()
-
-    # optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
-    # x = "User: Hello!  ASSIANT: Hello!"
-#     x = '''USER: Consider the following list of slot types provided to you:\n
-# "event_name", "date", "person", "time", "news_topic", "relation", "list_name", "media_type", "business_name", "weather_descriptor", "music_genre", "house_place", "game_name", "food_type", "timeofday", "place_name", "definition_word", "email_address", "transport_agency", "movie_name", "artist_name", "transport_type", "joke_type", "movie_type", "time_zone", "music_descriptor", "device_type", "color_type", "meal_type", "player_setting", "podcast_name", "email_folder", "song_name", "change_amount", "business_type", "personal_info", "radio_name", "coffee_type", "audiobook_author", "audiobook_name", "currency_name", "playlist_name", "podcast_descriptor", "general_frequency", "music_album", "app_name", "order_type", "transport_name", "transport_descriptor", "cooking_type", "ingredient", "alarm_type", "drink_type", "sport_type", "game_type"\n
-# Now consider the following sentence(s) containing one or more of the above slot types. Can you extract slots belonging to that slot list and their values in json format i.e. \\{"slot type": "value"\\}? ONLY print out the json, or only print \\{\\} if no slot.\n
-# "need information about events before shift ends"\n
-# ASSISTANT:'''
-#     input_x = tokenizer(x, return_tensors="pt").to(model.llm.device).data
-#     output, _ = model(input_x, labels=None, knowledge=None)
-#     logits = output.logits
-#     loss = torch.nn.functional.cross_entropy(logits.squeeze(), target=input_x["input_ids"].squeeze())
-#     loss.backward()
-
     with torch.no_grad():
         traindata.refill_labelset(step=0)
         if args.task == "normal":
@@ -314,7 +244,78 @@ def main(args):
             train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
     valid_dataloader = DataLoader(valdata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
 
-    del llm
+    # Initialise criterion
+    # criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
+    if args.criterion == "xent":
+        criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
+    elif args.criterion == "logconf":
+        criterion = logconf_loss_fn()
+    elif args.criterion == "logconf_step":
+        criterion = logconf_step_loss_fn()
+    elif args.criterion == "logconf_confer":
+        criterion = logconf_confer_loss_fn()
+    elif args.criterion == "dir":
+        criterion = DirLossFn()
+    elif args.criterion == "edl":
+        criterion = edl_log_loss_fn(one_hot=args.one_hot)
+    elif args.criterion == "edl_conf":
+        criterion = edl_logconf_loss_fn()
+    elif args.criterion == "edl_step":
+        criterion = edl_logconf_step_loss_fn(aux_coef=args.aux_coef, one_hot=args.one_hot)
+    elif args.criterion == "edl_confer":
+        criterion = edl_logconf_confer_loss_fn()
+    elif args.criterion == "soft":
+        criterion = soft_kl_loss_fn()
+    elif args.criterion == "soft_step":
+        criterion = soft_step_conf_loss_fn()
+    elif args.criterion == "soft_confer":
+        criterion = soft_confer_loss_fn()
+
+#     optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
+#     x = "User: Hello!  ASSIANT: Hello!"
+#     x = '''USER: Consider the following list of slot types provided to you:\n
+# "event_name", "date", "person", "time", "news_topic", "relation", "list_name", "media_type", "business_name", "weather_descriptor", "music_genre", "house_place", "game_name", "food_type", "timeofday", "place_name", "definition_word", "email_address", "transport_agency", "movie_name", "artist_name", "transport_type", "joke_type", "movie_type", "time_zone", "music_descriptor", "device_type", "color_type", "meal_type", "player_setting", "podcast_name", "email_folder", "song_name", "change_amount", "business_type", "personal_info", "radio_name", "coffee_type", "audiobook_author", "audiobook_name", "currency_name", "playlist_name", "podcast_descriptor", "general_frequency", "music_album", "app_name", "order_type", "transport_name", "transport_descriptor", "cooking_type", "ingredient", "alarm_type", "drink_type", "sport_type", "game_type"\n
+# Now consider the following sentence(s) containing one or more of the above slot types. Can you extract slots belonging to that slot list and their values in json format i.e. \\{"slot type": "value"\\}? ONLY print out the json, or only print \\{\\} if no slot.\n
+# "need information about events before shift ends"\n
+# ASSISTANT:'''
+#     input_x = tokenizer(x, return_tensors="pt").to(model.llm.device).data
+#     output, _ = model(input_x, labels=None, knowledge=None)
+#     logits = output.logits
+#     loss = torch.nn.functional.cross_entropy(logits.squeeze(), target=input_x["input_ids"].squeeze())
+#     loss.backward()
+
+    # with torch.no_grad():
+    #     traindata.refill_labelset(step=0)
+    #     if args.task == "normal":
+    #         traindata = get_next_labelset(args, weak_tokenizer, weakmodel, traindata)
+    #         weakmodel.cpu()
+    #     elif args.task == "multi_weak":
+    #         traindata = get_next_labelset_multiweak(args, weak_tokenizer_list, weak_model_list, traindata)
+    #         del weak_model_list
+    #         del weak_tokenizer_list
+    #         del weakmodel
+    #     elif args.task == "joint_decode":
+    #         traindata = get_next_labelset_jointdecode(args, weak_tokenizer_list, weak_model_list, traindata)
+    #         del weak_model_list
+    #         del weak_tokenizer_list
+    #         del weakmodel
+    #     traindata.tokenizer = tokenizer
+    #     valdata.refill_labelset(step=0)
+    #     # if args.task != "human_annotation":
+    #     #     valdata = get_next_labelset(args, weak_tokenizer, weakmodel, valdata)
+    #     valdata.tokenizer = tokenizer
+    # # if args.task == "multi_weak":
+    # if args.strong_score_wordpiece:
+    #     traindata.multi_weak = True
+    #     traindata.strong_score = True
+    #     train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn_strongscore_mw)
+    # else:
+    #     if args.task == "multi_weak":
+    #         train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn_multiweak)
+    #     else:
+    #         train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
+    # valid_dataloader = DataLoader(valdata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
+
 
     optimizer = AdamW(get_grouped_params(model), lr=args.learning_rate)
     num_update_steps_per_epoch = math.ceil(len(traindata) / (args.gradient_accumulation_steps * args.batch_size))
@@ -368,12 +369,14 @@ def main(args):
         current_lr = optimizer.param_groups[0]["lr"]
         logging(f"MAIN MODEL Epoch {epoch} | Validation PPL: {val_ppl} | Learning rate: {current_lr}")
         # Save models
-        if epoch == args.num_train_epochs - 1:
-            save_checkpoint(model, tokenizer, args.outputdir, epoch)
-        # if val_loss < best_val_loss:
-        #     logging(f"Saving best MAIN MODEL at Epoch {epoch}")
-        #     save_checkpoint(model, tokenizer, args.outputdir, "best")
-        #     best_val_loss = val_loss
+        if args.task == "human_annotation":
+            if val_loss < best_val_loss:
+                logging(f"Saving best MAIN MODEL at Epoch {epoch}")
+                save_checkpoint(model, tokenizer, args.outputdir, "best")
+                best_val_loss = val_loss
+        else:
+            if epoch == args.num_train_epochs - 1:
+                save_checkpoint(model, tokenizer, args.outputdir, epoch)
 
 
 def save_checkpoint(model, tokenizer, outputdir, epoch):
@@ -487,46 +490,61 @@ def calc_metrics(output, label):
 
 def get_next_labelset(args, tokenizer, model, traindata, strongerset=None):
     traindata.preprocess = False
-    if strongerset is not None:
-        stronger_tokenizer, strongermodel = strongerset
-    active_loader = DataLoader(traindata, batch_size=1, shuffle=False, collate_fn=collate_fn_active)
-    firstpass_ids_dict = {}
-    uncertainties = []
-    count = 0
-    for batch in tqdm(active_loader):
-        slurp_ids, sequences, nbest, label = batch
-        tokenized_seq = tokenizer(sequences[0], return_tensors="pt").input_ids.to(model.llm.device)
-        outputs = model.generate_beam(
-            tokenized_seq,
-            max_new_tokens=64,
-            beamsize=5,
-        )
-        firstpass_ids_dict[slurp_ids[0]] = []
-        lengths = torch.tensor([len(hyp.yseq) for hyp in outputs]).to(model.llm.device)
-        logplist = torch.stack([hyp.cumscore for hyp in outputs])
-        predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
-        uncertainties.append(predictive_entropy)
-        for k, hyp in enumerate(outputs):
-            # firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], predictive_entropy])
-            output_txt = tokenizer.decode(hyp.yseq, skip_special_tokens=True).strip().split("</s>")[0]
-            wp_score = torch.Tensor(hyp.scores)
-            # if output_txt == "":
-            #     output_txt = "{}"
-            empty = True
-            for char in output_txt:
-                if char not in string.punctuation:
-                    empty = False
-            if empty:
-                output_txt = "{}"
-                word_score = torch.sum(wp_score)
-            else:
-                weak_input_ids = tokenizer.encode(output_txt+"</s>")
-                mapping = wp_word_map(
-                    wordpiece_list=[tokenizer.decode(id).replace(' ', '') for id in weak_input_ids],
-                    word_list=(output_txt+"</s>").split(' ')
-                )
-                word_score = torch.stack([wp_score[start:end+1].sum() for start, end in mapping])
-            firstpass_ids_dict[slurp_ids[0]].append([output_txt, predictive_entropy, word_score])
+    if args.data_pre_generated:
+        firstpass_ids_dict = {}
+        uncertainties = []
+        weak_model_names = args.weak_model_names.split(",")
+        for weak_model_name in weak_model_names:
+            weak_label_json = f"exp/weak/{weak_model_name}/weak_data.json"
+            with open(weak_label_json) as f:
+                weak_labels = json.load(f)
+            for slurp_id in weak_labels:
+                output_txt = weak_labels[slurp_id]["output_txt"]
+                predictive_entropy = torch.tensor(weak_labels[slurp_id]["predictive_entropy"], dtype=torch.bfloat16, device=model.llm.device)
+                word_score = torch.tensor(weak_labels[slurp_id]["word_score"])
+                firstpass_ids_dict[int(slurp_id)] = [[output_txt, predictive_entropy, word_score]]
+                uncertainties.append(predictive_entropy)
+    else:
+        if strongerset is not None:
+            stronger_tokenizer, strongermodel = strongerset
+        active_loader = DataLoader(traindata, batch_size=1, shuffle=False, collate_fn=collate_fn_active)
+        firstpass_ids_dict = {}
+        uncertainties = []
+        count = 0
+        for batch in tqdm(active_loader):
+            slurp_ids, sequences, nbest, label = batch
+            tokenized_seq = tokenizer(sequences[0], return_tensors="pt").input_ids.to(model.llm.device)
+            outputs = model.generate_beam(
+                tokenized_seq,
+                max_new_tokens=64,
+                beamsize=5,
+            )
+            firstpass_ids_dict[slurp_ids[0]] = []
+            lengths = torch.tensor([len(hyp.yseq) for hyp in outputs]).to(model.llm.device)
+            logplist = torch.stack([hyp.cumscore for hyp in outputs])
+            predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
+            uncertainties.append(predictive_entropy)
+            for k, hyp in enumerate(outputs):
+                # firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq).split("</s>")[0], predictive_entropy])
+                output_txt = tokenizer.decode(hyp.yseq, skip_special_tokens=True).strip().split("</s>")[0]
+                wp_score = torch.Tensor(hyp.scores)
+                # if output_txt == "":
+                #     output_txt = "{}"
+                empty = True
+                for char in output_txt:
+                    if char not in string.punctuation:
+                        empty = False
+                if empty:
+                    output_txt = "{}"
+                    word_score = torch.sum(wp_score)
+                else:
+                    weak_input_ids = tokenizer.encode(output_txt+"</s>")
+                    mapping = wp_word_map(
+                        wordpiece_list=[tokenizer.decode(id).replace(' ', '') for id in weak_input_ids],
+                        word_list=(output_txt+"</s>").split(' ')
+                    )
+                    word_score = torch.stack([wp_score[start:end+1].sum() for start, end in mapping])
+                firstpass_ids_dict[slurp_ids[0]].append([output_txt, predictive_entropy, word_score])
             # firstpass_ids_dict[slurp_ids[0]].append([tokenizer.decode(hyp.yseq, skip_special_tokens=True), predictive_entropy])
     uncertainties = sorted(uncertainties, reverse=True)
     threshold = uncertainties[int(args.unc_threshold * len(uncertainties))]
@@ -544,44 +562,65 @@ def get_next_labelset(args, tokenizer, model, traindata, strongerset=None):
 
 def get_next_labelset_multiweak(args, weak_tokenizer_list, weak_model_list, traindata):
     traindata.preprocess = False
-    active_loader = DataLoader(traindata, batch_size=1, shuffle=False, collate_fn=collate_fn_active)
-    firstpass_ids_dict = {}
-    uncertainties = []
-    for batch in tqdm(active_loader):
-        slurp_ids, sequences, nbest, label = batch
-        outputs_list = []
-        for tokenizer, model in zip(weak_tokenizer_list, weak_model_list):
-            tokenized_seq = tokenizer(sequences[0], return_tensors="pt").input_ids.to(model.llm.device)
-            outputs = model.generate_beam(
-                tokenized_seq,
-                max_new_tokens=64,
-                beamsize=5,
-            )
-            lengths = torch.tensor([len(hyp.yseq) for hyp in outputs]).to(model.llm.device)
-            logplist = torch.stack([hyp.cumscore for hyp in outputs])
-            predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
-            # outputs_list.append([tokenizer.decode(outputs[0].yseq).split("</s>")[0], predictive_entropy])
-            # outputs_list.append([tokenizer.decode(outputs[0].yseq, skip_special_tokens=True).strip(), predictive_entropy])
-            output_txt = tokenizer.decode(outputs[0].yseq, skip_special_tokens=True).strip().split("</s>")[0]
-            wp_score = torch.Tensor(outputs[0].scores)
-            empty = True
-            for char in output_txt:
-                if char not in string.punctuation:
-                    empty = False
-            if empty:
-                output_txt = "{}"
-                word_score = torch.sum(wp_score)
-            else:
-                weak_input_ids = tokenizer.encode(output_txt+"</s>")
-                mapping = wp_word_map(
-                    wordpiece_list=[tokenizer.decode(id).replace(' ', '') for id in weak_input_ids],
-                    word_list=(output_txt+"</s>").split(' ')
+    if args.data_pre_generated:
+        firstpass_ids_dict = {}
+        uncertainties = []
+        weak_model_names = args.weak_model_names.split(",")
+        for n, weak_model_name in enumerate(weak_model_names):
+            weak_label_json = f"exp/weak/{weak_model_name}/weak_data.pth"
+            # with open(weak_label_json) as f:
+            #     weak_labels = json.load(f)
+            weak_labels = torch.load(weak_label_json)
+            for slurp_id in weak_labels:
+                output_txt = weak_labels[slurp_id]["output_txt"]
+                # predictive_entropy = torch.tensor(weak_labels[slurp_id]["predictive_entropy"], dtype=torch.bfloat16, device=weak_model_list[0].llm.device)
+                # word_score = torch.tensor(weak_labels[slurp_id]["word_score"], dtype=torch.float32, device=weak_model_list[0].llm.device)
+                predictive_entropy = weak_labels[slurp_id]["predictive_entropy"]
+                word_score = weak_labels[slurp_id]["word_score"]
+                if n == 0:
+                    firstpass_ids_dict[int(slurp_id)] = [[output_txt, predictive_entropy, word_score]]
+                else:
+                    firstpass_ids_dict[int(slurp_id)].append([output_txt, predictive_entropy, word_score])
+                uncertainties.append(predictive_entropy)
+    else:
+        active_loader = DataLoader(traindata, batch_size=1, shuffle=False, collate_fn=collate_fn_active)
+        firstpass_ids_dict = {}
+        uncertainties = []
+        for batch in tqdm(active_loader):
+            slurp_ids, sequences, nbest, label = batch
+            outputs_list = []
+            for tokenizer, model in zip(weak_tokenizer_list, weak_model_list):
+                tokenized_seq = tokenizer(sequences[0], return_tensors="pt").input_ids.to(model.llm.device)
+                outputs = model.generate_beam(
+                    tokenized_seq,
+                    max_new_tokens=64,
+                    beamsize=5,
                 )
-                word_score = torch.stack([wp_score[start:end+1].sum() for start, end in mapping])
+                lengths = torch.tensor([len(hyp.yseq) for hyp in outputs]).to(model.llm.device)
+                logplist = torch.stack([hyp.cumscore for hyp in outputs])
+                predictive_entropy, unnorm_entropy, _ = calc_predictive_entropy(logplist, 1, lengths)
+                # outputs_list.append([tokenizer.decode(outputs[0].yseq).split("</s>")[0], predictive_entropy])
+                # outputs_list.append([tokenizer.decode(outputs[0].yseq, skip_special_tokens=True).strip(), predictive_entropy])
+                output_txt = tokenizer.decode(outputs[0].yseq, skip_special_tokens=True).strip().split("</s>")[0]
+                wp_score = torch.Tensor(outputs[0].scores)
+                empty = True
+                for char in output_txt:
+                    if char not in string.punctuation:
+                        empty = False
+                if empty:
+                    output_txt = "{}"
+                    word_score = torch.sum(wp_score)
+                else:
+                    weak_input_ids = tokenizer.encode(output_txt+"</s>")
+                    mapping = wp_word_map(
+                        wordpiece_list=[tokenizer.decode(id).replace(' ', '') for id in weak_input_ids],
+                        word_list=(output_txt+"</s>").split(' ')
+                    )
+                    word_score = torch.stack([wp_score[start:end+1].sum() for start, end in mapping])
 
-            outputs_list.append([output_txt, predictive_entropy, word_score])
-            uncertainties.append(predictive_entropy)
-        firstpass_ids_dict[slurp_ids[0]] = outputs_list
+                outputs_list.append([output_txt, predictive_entropy, word_score])
+                uncertainties.append(predictive_entropy)
+            firstpass_ids_dict[slurp_ids[0]] = outputs_list
     uncertainties = sorted(uncertainties, reverse=True)
     threshold = uncertainties[int(args.unc_threshold * len(uncertainties))]
     logging(f"Threshold for uncertainty: {threshold}")
@@ -609,7 +648,7 @@ def get_next_labelset_jointdecode(args, weak_tokenizer_list, weak_model_list, tr
             outputs = model.generate_beam(
                 tokenized_seq,
                 max_new_tokens=64,
-                beamsize=5,
+                beamsize=args.nbest,
             )
             lengths = torch.tensor([len(hyp.yseq) for hyp in outputs]).to(model.llm.device)
             logplist = torch.stack([hyp.cumscore for hyp in outputs])
@@ -649,7 +688,13 @@ def get_next_labelset_jointdecode(args, weak_tokenizer_list, weak_model_list, tr
             scores = torch.stack([model.scoring(sequences[0], result[0]) for model in weak_model_list])
             # filtered_list[i].append(scores.mean())
             filtered_list[i].append(scores)
-            weight = torch.Tensor([0.5, 0.2, 0.3]).to(scores.device)
+            if len(weak_tokenizer_list) == 3:
+                weight = torch.Tensor([0.5, 0.2, 0.3]).to(scores.device)
+            elif len(weak_tokenizer_list) == 4:
+                weight = torch.Tensor([0.4, 0.2, 0.2, 0.2]).to(scores.device)
+            elif len(weak_tokenizer_list) == 5:
+                # weight = torch.Tensor([0.1, 0.3, 0.2, 0.3, 0.1]).to(scores.device)
+                weight = torch.Tensor([0.4, 0.2, 0.2, 0.2, 0]).to(scores.device)
             scores = scores.matmul(weight)
             # scores = scores.matmul(value)
             # scores = scores.mean()
@@ -770,7 +815,11 @@ def train_one_epoch_multiweak(args, epoch, model, train_dataloader, optimizer, l
                 for j, (start, end) in enumerate(mapping):
                     strong_probs, _ = torch.max(probs[start:end+1], dim=-1)
                     # wp_score = torch.softmax(-strong_probs/0.3, dim=0) * wd_score[j]
-                    wp_score = torch.softmax(-strong_probs, dim=0) * wd_score[j]
+                    if args.no_ss:
+                        mean_weight = torch.full_like(strong_probs, 1/len(strong_probs))
+                        wp_score = mean_weight * wd_score[j]
+                    else:
+                        wp_score = torch.softmax(-strong_probs, dim=0) * wd_score[j]
                     wp_score_list.append(wp_score.detach())
                 score = torch.concat(wp_score_list, dim=0)
                 assert len(score) == len(labels)
@@ -786,13 +835,23 @@ def train_one_epoch_multiweak(args, epoch, model, train_dataloader, optimizer, l
             # loss = loss / args.gradient_accumulation_steps / len(inputs_list)
             if len(loss) == 1:
                 loss = loss[0]
-            else:
+            elif len(loss) == 3:
                 loss = torch.stack(loss)
                 weight = torch.Tensor([0.25, 0.25, 0.5]).to(loss.device)
                 score_weight = torch.softmax(torch.Tensor(utterance_score_list), dim=0).to(loss.device)
                 # loss = loss.mean()
                 loss = loss.matmul(weight)
             # loss = loss.matmul(score_weight)
+            elif len(loss) == 5:
+                loss = torch.stack(loss)
+                if args.loss_weight == "fixed":
+                    weight = torch.Tensor([0.1, 0.3, 0.2, 0.3, 0.1]).to(loss.device)
+                    loss = loss.matmul(weight)
+                elif args.loss_weight == "mean":
+                    loss = loss.mean()    
+                elif args.loss_weight == "dynamic":
+                    score_weight = torch.softmax(torch.Tensor(utterance_score_list), dim=0).to(loss.device)
+                    loss = loss.matmul(score_weight)
             loss = loss / args.gradient_accumulation_steps
             
         loss.backward()
@@ -1060,5 +1119,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Whether to split wordpiece score according to strong model logits. "
     )
+    parser.add_argument("--aux_coef", type=float, default=0.25, help="Coef for aux loss")
+    parser.add_argument("--data_pre_generated", action="store_true", help="Whether weak label is pre generated.")
+    parser.add_argument("--one_hot", action="store_true", help="Whether to use one-hot label in edl loss")
+    parser.add_argument("--no_ss", action="store_true", help="Whether to use strong score to split")
+    parser.add_argument("--loss_weight", type=str, choices=["mean", "fixed", "dynamic"], default="fixed")
+    parser.add_argument("--nbest", type=int, default=5, help="N-best number when joint decoding.")
     args = parser.parse_args()
     main(args)

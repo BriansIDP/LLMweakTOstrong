@@ -8,10 +8,10 @@ nsamples=2000
 # expdir="exp/SLURP_w2s/SLURP_vicuna7bASR_vicuna7b_${nsamples}_samples_weak1000sample"
 # expdir="exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsamples}_samples_weak500to2000"
 # expdir="exp/weak/joint_decode_5+3+2"
-expdir="exp/w2s_corr_weak/gop_to_llama2/back/lr1e-5_bs1*2_epoch2_edl_step_1_2"
+expdir="exp/w2s_corr_weak/gop_to_llama2/joint/lr1e-5_bs1*2_epoch2_soft_3best_seed2"
 # expdir="exp/SLURP/SLURP_vicuna1\3bv1.5_${nsamples}_samples_zeroshot_baseline2"
-logfile="$expdir/eval_log_4090.txt"
-result_file="output_${asrname}_top1upperbound_iter1_4090.json"
+logfile="$expdir/eval_log.txt"
+result_file="output_${asrname}_top1upperbound_iter1.json"
 
 if [ -e "${expdir}/${result_file}" ]; then
     echo "Infer has been done before"
@@ -49,6 +49,6 @@ else
 fi
 
 cd ./evaluation
-python evaluate.py -g ../testcleanslot.jsonl -p ../../${expdir}/${result_file1} > ../../${expdir}/eval_result_4090.log
+python evaluate.py -g ../testcleanslot.jsonl -p ../../${expdir}/${result_file1} > ../../${expdir}/eval_result.log
 
 cd ../../

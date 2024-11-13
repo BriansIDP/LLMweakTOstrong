@@ -1,7 +1,7 @@
 # import debugpy
 
 # # 5678是debugpy服务器监听的端口号，确保这个端口在你的系统上是空闲的
-# debugpy.listen(('0.0.0.0', 5678))
+# debugpy.listen(('0.0.0.0', 5679))
 # print("⏳ Waiting for debugger to attach...")
 
 # # 让debugpy等待VSCode的调试器连接
@@ -26,8 +26,7 @@ from transformers.modeling_utils import load_sharded_checkpoint, safe_load_file,
 from peft import PeftModel, PeftConfig
 
 from data.prompt import templates, prompts
-# from knowledgemodel import KnowledgeLLM
-from model_back import KnowledgeLLM
+from knowledgemodel import KnowledgeLLM
 from scoring.evaluation.metrics import ErrorMetric
 from scoring.evaluation.util import format_results, load_predictions, load_gold_data
 from scoring.evaluation.normalizers.english import EnglishTextNormalizer

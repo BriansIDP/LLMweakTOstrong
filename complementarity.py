@@ -4,11 +4,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from jiwer import wer
 
-weak_model_list = ["gpt2-large", "opt-1.3b", "pythia-1.4b"]
+weak_model_list = ["gpt2-large", "opt-1.3b", "pythia-1.4b", "bloom-1b1", "TinyLlama_v1.1"]
 
-confusion_matrix = [[0, 0, 0],
-                    [0, 0, 0],
-                    [0, 0, 0]]
+confusion_matrix = [[0, 0, 0, 0, 0],
+                    [0, 0, 0, 0, 0],
+                    [0, 0, 0, 0, 0],
+                    [0, 0, 0, 0, 0],
+                    [0, 0, 0, 0, 0]]
 
 for i, weak_model in enumerate(weak_model_list):
     for j, ref_weak_model in enumerate(weak_model_list):
@@ -27,14 +29,14 @@ for i, weak_model in enumerate(weak_model_list):
             wer_list.append((error1 + error2) / 2)
         confusion_matrix[i][j] = sum(wer_list) / len(wer_list)
 
-# print(confusion_matrix)
+print(confusion_matrix)
 
-confusion_matrix = np.array(confusion_matrix)
+# confusion_matrix = np.array(confusion_matrix)
 
-plt.figure(figsize=(10, 7))
-sns.heatmap(confusion_matrix, annot=True, fmt=".2f", cmap="Blues", cbar=True)
-class_labels = weak_model_list
-plt.xticks(np.arange(len(class_labels)) + 0.5, class_labels, rotation=45)
-plt.yticks(np.arange(len(class_labels)) + 0.5, class_labels, rotation=0)
+# plt.figure(figsize=(10, 7))
+# sns.heatmap(confusion_matrix, annot=True, fmt=".2f", cmap="Blues", cbar=True)
+# class_labels = weak_model_list
+# plt.xticks(np.arange(len(class_labels)) + 0.5, class_labels, rotation=45)
+# plt.yticks(np.arange(len(class_labels)) + 0.5, class_labels, rotation=0)
 
-plt.show()
+# plt.show()

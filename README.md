@@ -55,3 +55,17 @@ You will get one .jsonl file that can be scored using the official SLURP evaluat
 
 `cd evaluation` \
 `bash eval.sh`: Note you need to modify the path after `-p` \
+
+## Train and Infer (for w2s w/o delibration)
+train_weak_to_strong_clear.py: clean w2s code
+train_weak.sh: Weak model training
+train.sh: Strong model training
+trian_search.sh: W2S training, searching seed and loss
+
+infer_single.py: Infer of single model
+eval.sh: Evaluate
+
+## Config for w2s with soft label
+task=multi_weak (both single weak and multi weaks)
+strong_score_wordpiece=True
+weak_model_names: target weak model (one for single model and numbers for multi models).

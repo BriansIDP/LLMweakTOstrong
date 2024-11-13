@@ -8,7 +8,7 @@ nsamples=2000
 # expdir="exp/SLURP_w2s/SLURP_vicuna7bASR_vicuna7b_${nsamples}_samples_weak1000sample"
 # expdir="exp/SLURP_w2s/SLURP_gpt2_vicuna7b_${nsamples}_samples_weak500to2000"
 # expdir="exp/weak/joint_decode_5+3+2"
-expdir="exp/w2s_corr_weak/gop_to_llama2/dpo1/cdpoloss_beta10_lr3e-7_sum_10top_3epoch_ls0.2"
+expdir="exp/w2s_corr_weak/gopbt_to_llama2/cdpo/edlstep_seed2_beta5_lr5e-7_sum_10top_3epoch_ls0.1_weakfile"
 # expdir="exp/SLURP/SLURP_vicuna1\3bv1.5_${nsamples}_samples_zeroshot_baseline2"
 logfile="$expdir/eval_log.txt"
 
@@ -20,7 +20,7 @@ do
     if [ -e "${expdir}/${result_file}" ]; then
         echo "Infer has been done before"
     else
-        CUDA_VISIBLE_DEVICES=1 \
+        CUDA_VISIBLE_DEVICES=6 \
         python infer_single.py \
             --model_path $expdir \
             --main_ckpt checkpoint.${num} \

@@ -151,6 +151,9 @@ class KnowledgeLLM(torch.nn.Module):
         else:
             past_key_values = [[item.repeat(beamsize, 1, 1, 1) for item in items] for items in past_key_values]
 
+        if self.llm.config.model_type == "bloom":
+            past_key_values = self.llm._convert_to_bloom_cache(past_key_values)
+
         while keepbeam.size(-1) < max_new_tokens and len(finished_beam) < beamsize:
             # input_embs = self.get_embedding(keepbeam)
             masked_logprob, _ = self.decode_one_step(

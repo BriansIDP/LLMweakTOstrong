@@ -35,13 +35,18 @@ modelpath=/mnt/nvme_share/cuizy/models/llama-2-7b-hf
 # pretrained_weak_model_path="exp/weak/opt-1.3b/checkpoint.best"
 pretrained_weak_model_path="exp/weak/pythia-1.4b/checkpoint.best"
 pretrained_strong_model_path=exp/debug/checkpoint.best_stronger
-pretrained_model_path="exp/w2s_corr_weak/gop_to_llama2/edl/lr1e-5_bs1*2_epoch2_edl_rescale_ss2_weight_step_fordpo/checkpoint.1"
+# pretrained_model_path="exp/w2s_corr_weak/gopbt_to_llama2/edl/lr1e-5_bs1*2_epoch2_edl_step_auxcoef0.2_weighted2_seed1/checkpoint.1"
 
-
-expdir="exp/w2s_corr_weak/gop_to_llama2/dpo1/cdpoloss_beta10_lr2e-7_sum_10top_2epoch_ls0.1"
+# lr_list="1e-7 2e-7 5e-7"
+# beta_list="1 2 5"
+seed_list="0 2"
+for seed in $seed_list
+do
+pretrained_model_path="exp/w2s_corr_weak/gopbt_to_llama2/edl/lr1e-5_bs1*2_epoch2_edl_step_auxcoef0.2_weighted2_seed${seed}/checkpoint.1"
+expdir="exp/w2s_corr_weak/gopbt_to_llama2/cdpo/edlstep_seed${seed}_beta5_lr5e-7_sum_10top_3epoch_ls0.1_weakfile"
 mkdir -p $expdir
 
-CUDA_VISIBLE_DEVICES=4 \
+CUDA_VISIBLE_DEVICES=2 \
 python train_weak_to_strong_dpo.py \
     --model_path $modelpath \
     --weak_model_path $weakmodel \
@@ -52,14 +57,14 @@ python train_weak_to_strong_dpo.py \
     --strong_train_samples $strongsample \
     --batch_size 1 \
     --eval_batch_size 8 \
-    --learning_rate 2e-7 \
+    --learning_rate 5e-7 \
     --gradient_accumulation_steps 2 \
     --num_train_epochs 1 \
-    --num_train_epochs_dpo 2 \
+    --num_train_epochs_dpo 3 \
     --outputdir $expdir \
     --logfile $expdir/log.txt \
     --log_interval 50 \
-    --train_data_path $trainfile \
+    --train_data_path $trainweakfile \
     --weak_train_path $trainweakfile \
     --val_data_path $valfile \
     --use_lora false \
@@ -69,14 +74,14 @@ python train_weak_to_strong_dpo.py \
     --lora_config data/lora_config.json \
     --task multi_weak \
     --criterion soft \
-    --weak_model_names gpt2-large,opt-1.3b,pythia-1.4b \
+    --weak_model_names gpt2-large,opt-1.3b,pythia-1.4b,bloom-1b1,TinyLlama_v1.1 \
     --asrplace none \
     --num_candidates 1 \
     --strong_score_wordpiece \
-    --beta 10 \
+    --beta 5 \
     --label_smoothing 0.1 \
     > ${expdir}/train_log.log 2>&1
-
+done
     # --pretrained_weak_model_path $pretrained_weak_model_path \
     # --pretrained_strong_model_path $pretrained_strong_model_path \
     # --criterion logconf \

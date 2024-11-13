@@ -242,11 +242,13 @@ class soft_kl_loss_fn(LossFnBase):
         labels = labels[lossmask == False]
         assert len(token_score) == len(labels)
         
+        # 其他category的prob平铺
         # onehot_label = torch.nn.functional.one_hot(labels, num_classes=num_class).float()
         # onehot_num = token_score - (1.0-token_score)/(num_class-1)
         # onehot_label *= onehot_num
         # targets = ((1.0-token_score)/(num_class-1)).expand(labels.size(0), num_class) + onehot_label
 
+        # 在之前的基础上放缩
         prob = torch.softmax(logits, dim=-1)
         label_onehot = torch.nn.functional.one_hot(labels, num_classes=num_class)
         score_before = prob[label_onehot==1].view(-1, 1)
@@ -578,6 +580,12 @@ def edl_log_loss(output, target, step_frac, num_classes=2):
 
 
 class edl_log_loss_fn(LossFnBase):
+    def __init__(
+        self,
+        one_hot: bool=False,
+    ):
+        self.one_hot = one_hot
+
     def __call__(
         self,
         logits: torch.Tensor,
@@ -599,20 +607,22 @@ class edl_log_loss_fn(LossFnBase):
 
         # targets = torch.nn.functional.one_hot(labels, num_classes=logits.size(-1)).float()
         
-        onehot_label = torch.nn.functional.one_hot(labels, num_classes=num_class).float()
-        onehot_num = token_score - (1.0-token_score)/(num_class-1)
-        onehot_label *= onehot_num
-        targets = ((1.0-token_score)/(num_class-1)).expand(labels.size(0), num_class) + onehot_label
+        # onehot_label = torch.nn.functional.one_hot(labels, num_classes=num_class).float()
+        # onehot_num = token_score - (1.0-token_score)/(num_class-1)
+        # onehot_label *= onehot_num
+        # targets = ((1.0-token_score)/(num_class-1)).expand(labels.size(0), num_class) + onehot_label
 
         # onehot_label = torch.nn.functional.one_hot(labels, num_classes=num_class).float()
         # targets = onehot_label * token_score
-
-        # prob = torch.softmax(logits, dim=-1)
-        # label_onehot = torch.nn.functional.one_hot(labels, num_classes=num_class)
-        # score_before = prob[label_onehot==1].view(-1, 1)
-        # scale = (1-token_score) / (1-score_before)
-        # targets = prob * scale
-        # targets[label_onehot==1] = token_score.view(1, -1)
+        if self.one_hot:
+            targets = torch.nn.functional.one_hot(labels, num_classes=logits.size(-1)).float()
+        else:
+            prob = torch.softmax(logits, dim=-1)
+            label_onehot = torch.nn.functional.one_hot(labels, num_classes=num_class)
+            score_before = prob[label_onehot==1].view(-1, 1)
+            scale = (1-token_score) / (1-score_before)
+            targets = prob * scale
+            targets[label_onehot==1] = token_score.view(1, -1)
 
         # loss = edl_log_loss(logits, labels, step_frac)
         loss = edl_log_loss(
@@ -695,9 +705,11 @@ class edl_logconf_step_loss_fn(LossFnBase):
         self,
         aux_coef: float = 0.25,
         warmup_frac: float = 0.25,  # in terms of fraction of total training steps
+        one_hot: bool=False,
     ):
         self.aux_coef = aux_coef
         self.warmup_frac = warmup_frac
+        self.one_hot = one_hot
 
     def __call__(
         self,
@@ -725,13 +737,16 @@ class edl_logconf_step_loss_fn(LossFnBase):
 
         # onehot_label = torch.nn.functional.one_hot(labels, num_classes=num_class).float()
         # targets = onehot_label * token_score
-
-        prob = torch.softmax(logits, dim=-1)
-        label_onehot = torch.nn.functional.one_hot(labels, num_classes=num_class)
-        score_before = prob[label_onehot==1].view(-1, 1)
-        scale = (1-token_score) / (1-score_before)
-        targets = prob * scale
-        targets[label_onehot==1] = token_score.view(1, -1)
+        if self.one_hot:
+            onehot_label = torch.nn.functional.one_hot(labels, num_classes=logits.size(-1)).float()
+            targets = onehot_label * token_score
+        else:
+            prob = torch.softmax(logits, dim=-1)
+            label_onehot = torch.nn.functional.one_hot(labels, num_classes=num_class)
+            score_before = prob[label_onehot==1].view(-1, 1)
+            scale = (1-token_score) / (1-score_before)
+            targets = prob * scale
+            targets[label_onehot==1] = token_score.view(1, -1)
 
         # targets = torch.nn.functional.one_hot(labels, num_classes=logits.size(-1)).float()
 

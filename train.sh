@@ -36,11 +36,13 @@ modelpath=/mnt/nvme_share/cuizy/models/llama-2-7b-hf
 pretrained_weak_model_path="exp/weak/pythia-1.4b/checkpoint.best"
 pretrained_strong_model_path=exp/debug/checkpoint.best_stronger
 
-
-expdir="exp/strong/llama2-ft-1"
+seed_list="0 1 2"
+for seed in $seed_list
+do
+expdir="exp/strong/llama2-ft-1/lr1e-5_5epoch_seed${seed}"
 mkdir -p $expdir
 
-CUDA_VISIBLE_DEVICES=0 \
+CUDA_VISIBLE_DEVICES=2 \
 python train_weak_to_strong_clear.py \
     --model_path $modelpath \
     --weak_model_path $weakmodel \
@@ -52,7 +54,7 @@ python train_weak_to_strong_clear.py \
     --eval_batch_size 8 \
     --learning_rate 1e-5 \
     --gradient_accumulation_steps 2 \
-    --num_train_epochs 2 \
+    --num_train_epochs 5 \
     --outputdir $expdir \
     --logfile $expdir/log.txt \
     --log_interval 50 \
@@ -69,8 +71,9 @@ python train_weak_to_strong_clear.py \
     --weak_model_names gpt2-large,opt-1.3b,pythia-1.4b \
     --asrplace none \
     --num_candidates 1 \
+    --seed $seed \
     > ${expdir}/train_log.log 2>&1
-
+done
     # --pretrained_weak_model_path $pretrained_weak_model_path \
     # --pretrained_strong_model_path $pretrained_strong_model_path \
     # --criterion logconf \

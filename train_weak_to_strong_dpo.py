@@ -109,7 +109,7 @@ def main(args):
     # Load weak model first
     ##########################################
     if args.task == "normal":
-        weak_tokenizer = AutoTokenizer.from_pretrained(args.weak_model_path, use_fast=("pythia" in args.weak_model_path), trust_remote_code=True)
+        weak_tokenizer = AutoTokenizer.from_pretrained(args.weak_model_path, use_fast=("pythia" in args.weak_model_path or "bloom" in args.weak_model_path), trust_remote_code=True)
         if os.path.exists(args.pretrained_weak_model_path):
             if os.path.exists(os.path.join(args.pretrained_weak_model_path, "model.safetensors")):
                 weakllm = AutoModelForCausalLM.from_pretrained(
@@ -145,8 +145,8 @@ def main(args):
         weak_model_names = args.weak_model_names.split(",")
         for weak_model_name in weak_model_names:
             pretrained_weak_model_path = os.path.join("exp/weak", weak_model_name, 'checkpoint.best')
-            weak_model_path = os.path.join("/mnt/nvme_share/cuizy/models", weak_model_name.split('_')[0])
-            weak_tokenizer = AutoTokenizer.from_pretrained(weak_model_path, use_fast=("pythia" in weak_model_path), trust_remote_code=True)
+            weak_model_path = os.path.join("/mnt/nvme_share/cuizy/models", weak_model_name)
+            weak_tokenizer = AutoTokenizer.from_pretrained(weak_model_path, use_fast=("pythia" in args.weak_model_path or "bloom" in args.weak_model_path), trust_remote_code=True)
             if os.path.exists(pretrained_weak_model_path):
                 if os.path.exists(os.path.join(pretrained_weak_model_path, "model.safetensors")):
                     weakllm = AutoModelForCausalLM.from_pretrained(
@@ -334,6 +334,7 @@ def main(args):
         train_dataloader = DataLoader(traindata, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn_dpo)
         del weakmodel
         del weak_model_list
+        torch.cuda.empty_cache()
         for epoch in range(args.num_train_epochs_dpo):
             model.train()
             model = train_one_epoch_dpo(
@@ -689,7 +690,10 @@ def get_next_labelset_dpo(args, strong_tokenizer, strong_model, weak_model_list,
             label_ids = torch.IntTensor(hyp.yseq)
             assert len(label_ids) == len(wp_score)
             scores = torch.stack([model.scoring(sequences[0], output_txt) for model in weak_model_list])
-            weight = torch.Tensor([0.3, 0.3, 0.4]).to(scores.device)
+            if len(weak_model_list) == 3:
+                weight = torch.Tensor([0.3, 0.3, 0.4]).to(scores.device)
+            elif len(weak_model_list) == 5:
+                weight = torch.Tensor([0.1, 0.3, 0.2, 0.3, 0.1]).to(scores.device)
             scores = scores.matmul(weight)
             # output_list.append([output_txt, wp_score, scores])
             output_list.append([label_ids, wp_score, scores])
