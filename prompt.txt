@@ -1,0 +1,6 @@
+Train prompt: 
+'USER: Consider the following list of slot types provided to you:\n
+"event_name", "date", "person", "time", "news_topic", "relation", "list_name", "media_type", "business_name", "weather_descriptor", "music_genre", "house_place", "game_name", "food_type", "timeofday", "place_name", "definition_word", "email_address", "transport_agency", "movie_name", "artist_name", "transport_type", "joke_type", "movie_type", "time_zone", "music_descriptor", "device_type", "color_type", "meal_type", "player_setting", "podcast_name", "email_folder", "song_name", "change_amount", "business_type", "personal_info", "radio_name", "coffee_type", "audiobook_author", "audiobook_name", "currency_name", "playlist_name", "podcast_descriptor", "general_frequency", "music_album", "app_name", "order_type", "transport_name", "transport_descriptor", "cooking_type", "ingredient", "alarm_type", "drink_type", "sport_type", "game_type"\n
+Now consider the following sentence(s) containing one or more of the above slot types. Can you extract slots belonging to that slot list and their values in json format i.e. \\{"slot type": "value"\\}? ONLY print out the json, or only print \\{\\} if no slot.\n
+"need information about events before shift ends"\n
+ASSISTANT:'
